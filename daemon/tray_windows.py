@@ -36,10 +36,20 @@ if _REPO_ROOT not in sys.path:
 # window). The base interpreter does NOT see the venv's site-packages, so add
 # them here to resolve pystray/bleak/PIL. os.path.isdir guards the no-venv and
 # already-inside-venv cases; site.addsitedir is a no-op on a missing dir anyway.
+#
+# addsitedir appends, which lets the base interpreter's user site
+# (%APPDATA%\Python\PythonXY\site-packages) shadow the venv: an old
+# typing_extensions there broke anyio's import and crash-looped the daemon.
+# So the venv entries are moved in front of every other site-packages dir.
 _VENV_SITE = os.path.join(_REPO_ROOT, ".venv", "Lib", "site-packages")
 if os.path.isdir(_VENV_SITE):
     import site
+    _before = list(sys.path)
     site.addsitedir(_VENV_SITE)
+    _added = [p for p in sys.path if p not in _before]
+    _first_site = next((i for i, p in enumerate(_before)
+                        if "site-packages" in p.lower()), len(_before))
+    sys.path[:] = _before[:_first_site] + _added + _before[_first_site:]
 
 # ---------------------------------------------------------------------------
 # TrayState — thread-safe scalar bridge (loop -> tray)
