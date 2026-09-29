@@ -12,7 +12,11 @@
 // (~800 bytes) and let LVGL upscale it with nearest-neighbour. A full-screen
 // splash then costs ~800 bytes instead of 460 KB, with no cropping.
 
+// The animation set's grid. The stock claudepix set is 20x20; a set header
+// included before this one (splash_set.h) may define its own.
+#ifndef SPLASH_GRID
 #define SPLASH_GRID         20
+#endif
 #define SPLASH_SCALE_UNITY  256   // LVGL image-scale denominator (256 == 1.0x)
 
 typedef struct {

@@ -38,3 +38,6 @@ dist/
 # Firmware toolchain venv (setup-dev.ps1): pio, esptool and PlatformIO's
 # platform/toolchain/library cache
 .venv-dev/
+
+# Monkey splash previews (tools/monkey/make_monkey.py writes them)
+tools/monkey/preview/

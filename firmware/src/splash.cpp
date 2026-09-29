@@ -1,5 +1,5 @@
 #include "splash.h"
-#include "splash_animations.h"
+#include "splash_set.h"   // before splash_geometry.h: a set may define SPLASH_GRID
 #include "splash_geometry.h"
 #include "charge_anim.h"
 #include "ui.h"

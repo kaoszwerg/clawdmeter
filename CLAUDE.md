@@ -186,6 +186,16 @@ node tools/convert_to_c.js      # → firmware/src/splash_animations.h
 
 Each animation has a per-animation 10-color RGB565 palette. Cell values 0..9 index it. Default boot screen.
 
+**Second set: the Professor (monkey), 40x40, 16 colours.** Drawn in code by
+`tools/monkey/make_monkey.py` (poses = eyes/mouth/brows/arms/props on one base
+monkey) → `firmware/src/splash_animations_monkey.h`, GIF previews in
+`tools/monkey/preview/` (git-ignored). Picked at build time by
+`-DSPLASH_SET_MONKEY` through `splash_set.h`; env `waveshare_lcd_146_monkey`, or
+`PLATFORMIO_BUILD_FLAGS=-DSPLASH_SET_MONKEY` for any board. A set defines its
+own `SPLASH_GRID`/`SPLASH_PALETTE_SIZE`; `splash.cpp` works on any grid. It uses
+the stock animation names, so the rotation groups and host-API states map
+unchanged — keep new animations on those names. Never hand-edit the header.
+
 ## User profile / preferences
 
 See `~/.claude/projects/.../memory/` files for persistent context (user is an embedded-beginner senior dev, brand-conscious, prefers iterative UI refinement, dislikes me authoring my own art when third-party assets are intended). Always read those memory files at session start.
