@@ -217,6 +217,8 @@ Bash daemon (`daemon/claude-usage-daemon.sh`) reads OAuth token, polls Anthropic
 - On connect failure: cache is dropped AND device is removed from bluez (`bluetoothctl remove`) so the next scan won't re-pick a dead MAC. Multi-candidate scans pick `head -1` and let the failure cycle converge.
 - `POLL_INTERVAL=60`, `TICK=5`. Inner loop wakes every 5s to detect disconnects fast; polls Anthropic when 60s elapsed OR when ESP fires a refresh request.
 
+**Local host API (Windows daemon, 2026-09-29).** `daemon/host_api.py` serves `http://127.0.0.1:47280` so another app (yggshell) picks the device's animation without opening BLE itself — the daemon stays the only writer. VITI-shaped *app* role: `POST /api/status {"status":busy|call|away|focus|free|off}` or `{"anim":…}` claims for 90 s, `/api/keepalive`, `/api/release`, `GET /api/status` (link, battery via 0x2A19, usage, `shown`). A claim change is written at once (last reading resent with the new `"a"`), not at the next poll. Bearer key in `%LOCALAPPDATA%\Clawdmeter\api-key`. **Client reference: [`docs/host-api.md`](docs/host-api.md)** — keep it in step with the code, and `host_api.ANIMATIONS` in step with `splash_animations.h` (a test enforces the latter).
+
 **GATT characteristics on service `4c41555a-...0001`:**
 
 - `...0002` RX — daemon writes JSON usage payload here.

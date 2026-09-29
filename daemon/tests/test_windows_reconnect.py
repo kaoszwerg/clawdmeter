@@ -599,8 +599,12 @@ def test_start_notify_oserror_does_not_crash_connect_and_run():
         # Must NOT raise OSError — graceful degradation into the poll loop.
         result = _run(connect_and_run(device, stop_event))
 
-    # start_notify was actually attempted (and raised), but was swallowed.
-    assert mock_client.start_notify.call_count == 1
+    # The refresh subscription was actually attempted (and raised), but was
+    # swallowed. (The battery subscription is a second, separate start_notify.)
+    from daemon.claude_usage_daemon_windows import REQ_CHAR_UUID
+    refresh_calls = [c for c in mock_client.start_notify.call_args_list
+                     if c.args and c.args[0] == REQ_CHAR_UUID]
+    assert len(refresh_calls) == 1
     # Function returned normally instead of propagating the OSError.
     assert result is False
     # The link was cleaned up via the finally block.

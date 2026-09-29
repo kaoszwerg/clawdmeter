@@ -26,10 +26,18 @@ from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 
+try:
+    from daemon import host_api
+except ImportError:          # run as a script from inside daemon/
+    import host_api
+
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
+# Standard Battery Level characteristic. The firmware exposes it through the
+# HID device (ble_set_battery_level), so the host API can report the charge.
+BATTERY_CHAR_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 
 POLL_INTERVAL = 60
 TICK = 5
@@ -152,6 +160,36 @@ def read_clock_setting() -> str:
     except OSError:
         pass
     return "off"
+
+
+def read_config_value(key: str) -> str | None:
+    """Raw value of `key` in the config file, lower-cased; None if unset."""
+    try:
+        if CONFIG_FILE.exists():
+            for line in CONFIG_FILE.read_text().splitlines():
+                line = line.split("#", 1)[0].strip()
+                if "=" not in line:
+                    continue
+                k, val = line.split("=", 1)
+                if k.strip().lower() == key:
+                    return val.strip().lower()
+    except OSError:
+        pass
+    return None
+
+
+def read_api_settings() -> tuple[bool, int]:
+    """(enabled, port) of the local host API. On by default: it listens on
+    127.0.0.1 only and every call but /api/info needs the bearer key."""
+    enabled = read_config_value("api") != "off"
+    try:
+        port = int(read_config_value("api_port") or host_api.DEFAULT_PORT)
+    except ValueError:
+        port = host_api.DEFAULT_PORT
+    return enabled, port
+
+
+API_KEY_FILE = CONFIG_FILE.parent / "api-key"
 
 
 def add_chime_field(payload: dict) -> None:
@@ -460,6 +498,24 @@ class Session:
         except (BleakError, ValueError, OSError) as e:
             log(f"Refresh subscription unavailable: {e}")
 
+    async def setup_battery(self) -> None:
+        """Read the device's battery level once and follow its notifications.
+
+        Optional like the refresh subscription: boards without a battery report
+        a fixed value, and a missing characteristic only leaves it unknown.
+        """
+        def _on_battery(_char, data: bytearray) -> None:
+            if data:
+                host_api.STATE.set_battery(data[0])
+
+        try:
+            data = await self.client.read_gatt_char(BATTERY_CHAR_UUID)
+            if data:
+                host_api.STATE.set_battery(data[0])
+            await self.client.start_notify(BATTERY_CHAR_UUID, _on_battery)
+        except (BleakError, ValueError, OSError) as e:
+            log(f"Battery level unavailable: {e}")
+
     async def write_payload(self, payload: dict) -> bool:
         data = json.dumps(payload, separators=(",", ":")).encode()
         log(f"Sending: {data.decode()}")
@@ -652,16 +708,25 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
         return False
 
     log("Connected")
+    host_api.STATE.set_link(True, getattr(device, "address", None))
     session = Session(client)
     await session.setup_refresh_subscription()
+    await session.setup_battery()
 
     last_poll = 0.0  # D-03: poll immediately on first connect
     used_successfully = False
     consecutive_failures = 0  # D-03: zombie-link break counter
+    # The last usage payload, kept so a host-API animation change can go out
+    # at once — re-sent with the new "a" instead of spending an API request.
+    last_payload: dict | None = None
+    sent_anim: str | None = None
+    api_changed = asyncio.Event()
+    host_api.STATE.attach(asyncio.get_running_loop(), api_changed)
     try:
         while client.is_connected and not stop_event.is_set():
             now = time.time()
             elapsed = now - last_poll
+            payload = None
             if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
                 session.refresh_requested.clear()
                 token = read_token()  # D-09: fresh each cycle
@@ -677,34 +742,52 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         if tray_state:
                             tray_state.set_error("token expired — run claude login")
                         payload = None
-                    if payload is not None:
-                        if await session.write_payload(payload):
-                            last_poll = time.time()
-                            used_successfully = True
-                            consecutive_failures = 0  # D-03: reset on success
-                            if tray_state:
-                                tray_state.set_connected(time.time())
-                        else:
-                            consecutive_failures += 1
-                            if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
-                                log(
-                                    f"Zombie link detected ({consecutive_failures} consecutive"
-                                    f" write failures); abandoning connection"
-                                )
-                                break
-                    # else: payload is None from a TRANSIENT failure (network/DNS,
-                    # timeout, rate-limit, 5xx). poll_api already logged it; do NOT
-                    # toast "token expired" — that mislabeled a boot-time DNS blip
-                    # as an auth problem (SC#5). Leave tray state unchanged; the next
-                    # tick retries and set_connected() recovers it.
+                    # payload None from a TRANSIENT failure (network/DNS, timeout,
+                    # rate-limit, 5xx): poll_api already logged it; do NOT toast
+                    # "token expired" — that mislabeled a boot-time DNS blip as an
+                    # auth problem (SC#5). The next tick retries.
+                if payload is not None:
+                    last_payload = payload
+                    host_api.STATE.set_usage(payload)
+            # Cleared BEFORE reading the claim: a change that lands after this
+            # line sets the event again and the wait below returns at once.
+            api_changed.clear()
+            wanted = host_api.STATE.wanted_anim()
+            if payload is None and last_payload is not None and wanted != sent_anim:
+                # Only the animation changed (a claim, a release, a lapse):
+                # resend the last reading with a fresh clock.
+                payload = dict(last_payload)
+                add_clock_fields(payload)
+            if payload is not None:
+                payload["a"] = wanted
+                if await session.write_payload(payload):
+                    sent_anim = wanted
+                    host_api.STATE.set_written(wanted)
+                    if payload is last_payload:
+                        last_poll = time.time()
+                    used_successfully = True
+                    consecutive_failures = 0  # D-03: reset on success
+                    if tray_state:
+                        tray_state.set_connected(time.time())
+                else:
+                    host_api.STATE.set_error("write to the device failed")
+                    consecutive_failures += 1
+                    if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
+                        log(
+                            f"Zombie link detected ({consecutive_failures} consecutive"
+                            f" write failures); abandoning connection"
+                        )
+                        break
 
-            # Wake on a refresh request OR a stop, whichever comes first. Waking
-            # promptly on stop_event is what lets the finally below run
-            # client.disconnect() before the process exits, so the peer gets a
-            # clean GATT disconnect (returns to its waiting screen) instead of
-            # being left frozen on stale data after Quit (SC#3 graceful shutdown).
-            await _wait_first(session.refresh_requested, stop_event, timeout=TICK)
+            # Wake on a refresh request, a host-API change OR a stop, whichever
+            # comes first. Waking promptly on stop_event is what lets the
+            # finally below run client.disconnect() before the process exits, so
+            # the peer gets a clean GATT disconnect (returns to its waiting
+            # screen) instead of being left frozen on stale data after Quit
+            # (SC#3 graceful shutdown).
+            await _wait_first(session.refresh_requested, api_changed, stop_event, timeout=TICK)
     finally:
+        host_api.STATE.set_link(False)
         # Clean GATT disconnect on the way out — this is what tells the peripheral
         # the link is gone. WinRT can surface a raw OSError (not BleakError) here,
         # so swallow both; the link tears down regardless once we exit.
@@ -762,6 +845,10 @@ async def main(tray_state=None) -> None:
 
     log("=== Claude Usage Tracker Daemon (BLE, Windows) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
+
+    api_enabled, api_port = read_api_settings()
+    if api_enabled:
+        host_api.ensure_started(api_port, API_KEY_FILE, log)
 
     # D-05: two distinct backoff regimes — slow-search (device absent) vs fast-reconnect (link dropped)
     search_backoff = 1     # caps at 60s — gentle, for a device that is genuinely absent/off

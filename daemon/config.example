@@ -40,3 +40,12 @@ clock = off
 # named one first and falls back to the others if it does not respond, so a
 # board that is switched off or out of range never blocks the rest.
 # device =
+
+# Local host API (Windows only): lets another app on this machine — yggshell,
+# for one — choose the animation the device plays. Loopback only; every call
+# but /api/info needs the key in %LOCALAPPDATA%\Clawdmeter\api-key (tray menu:
+# "Copy API key"). Reference: docs/host-api.md. Read at daemon start.
+#   api      = on (default) | off
+#   api_port = 47280 (default)
+# api = on
+# api_port = 47280

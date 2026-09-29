@@ -265,11 +265,24 @@ def main() -> None:
             autostart.enable(tray_script=os.path.abspath(__file__))
         icon.update_menu()
 
+    def _on_copy_api_key(_icon_ref, _item) -> None:
+        # The key a local app (yggshell) needs for the host API — see
+        # docs/host-api.md. `clip` expects UTF-16 on stdin; CREATE_NO_WINDOW
+        # keeps pythonw from flashing a console.
+        import subprocess
+        from daemon.claude_usage_daemon_windows import API_KEY_FILE
+        from daemon.host_api import load_or_create_key
+        key = load_or_create_key(API_KEY_FILE)
+        subprocess.run(["clip"], input=key.encode("utf-16-le"),
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                       check=False)
+
     icon.menu = Menu(
         # Non-clickable status header; text updates via update_menu() on state change.
         MenuItem(lambda _item: header_text(ts), None, enabled=False),
         # Start-at-login toggle: checked= is a CALLABLE for live query (Pitfall 6).
         MenuItem("Start at login", _on_toggle, checked=lambda _item: autostart.is_enabled()),
+        MenuItem("Copy API key", _on_copy_api_key),
         MenuItem("Quit", _on_quit),
     )
 
