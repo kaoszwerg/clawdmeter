@@ -461,6 +461,7 @@ async def acquire_target():
     with Windows once first (the documented setup). Returns a BLEDevice or None.
     """
     addresses = discover_bonded_addresses()
+    host_api.STATE.set_paired(bool(addresses))
     if not addresses:
         return None
     address = addresses[_candidate_index % len(addresses)]

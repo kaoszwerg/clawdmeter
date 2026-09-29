@@ -87,6 +87,7 @@ class HostState:
         self._claimed_until = 0.0
         # device side, filled in by the daemon
         self._connected = False
+        self._paired: bool | None = None    # None = not looked yet
         self._address: str | None = None
         self._battery: int | None = None
         self._usage: dict | None = None
@@ -130,6 +131,11 @@ class HostState:
                 # "shown" would be worse than none.
                 self._battery = None
                 self._shown = None
+
+    def set_paired(self, paired: bool) -> None:
+        """Whether Windows lists at least one paired Clawdmeter."""
+        with self._lock:
+            self._paired = paired
 
     def set_battery(self, pct: int | None) -> None:
         with self._lock:
@@ -216,6 +222,7 @@ class HostState:
                 "status": self._signal if leading else None,
                 "anim": self._anim,
                 "shown": self._shown,
+                "paired": self._paired,
                 "connected": self._connected,
                 "address": self._address,
                 "battery": self._battery,

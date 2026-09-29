@@ -129,6 +129,28 @@ def test_link_loss_forgets_device_facts_not_the_claim():
     assert st["anim"] == "allow"       # delivered on the next connect
 
 
+def test_never_paired_reads_as_absent_not_as_a_fault():
+    s = HostState(clock=Clock())
+    st = s.status()
+    assert st["paired"] is None            # not looked yet
+    s.set_paired(False)
+    st = s.status()
+    assert st["paired"] is False
+    assert st["connected"] is False and st["address"] is None
+    assert st["shown"] is None and st["battery"] is None
+    assert st["usage"] is None and st["written_at"] is None
+    assert st["error"] is None
+
+
+def test_off_answers_exactly_like_release():
+    a = HostState(clock=Clock())
+    a.claim({"status": "busy"})
+    b = HostState(clock=Clock())
+    b.claim({"status": "busy"})
+    assert a.claim({"status": "off"}) == b.release()
+    assert a.status()["status"] is None and a.status()["anim"] == ""
+
+
 def test_usage_is_reported_in_plain_names():
     s = HostState(clock=Clock(500.0))
     s.set_usage({"s": 6, "sr": 39, "w": 83, "wr": 1339, "st": "allowed", "acct": "pro"})
