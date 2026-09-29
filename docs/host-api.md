@@ -246,12 +246,14 @@ Body: **exactly one** of
   what the ladder does not cover, e.g. a celebration. Prefer `status` for the
   ladder itself, so the mapping stays in one place.
 
-**Claims of `busy` and `call` also light a dark panel.** The device switches
-its screen off after a spell without touches (`sleep` in the daemon config,
-30 min by default), and those are the two states that exist to be seen. The
-wake fires once, when the claim *changes* into one of them. Renewals do not
-wake, and neither do the other signals or a raw `anim`. `/api/info` lists
-them as `wake_signals`.
+**A claim keeps the panel lit.** The device switches its screen off after a
+spell without touches (`sleep` in the daemon config, 30 min by default), but
+not while a client holds a claim: any claimed state — `away` included — lights
+a dark panel and keeps it on, and the idle timer only starts once the claim is
+released or lapses. `busy` and `call` (listed as `wake_signals` in
+`/api/info`) additionally send an explicit wake with the change; with the
+current firmware that is redundant, and it keeps an older firmware waking for
+the two states that exist to be seen.
 
 The claim leads for `claim_s` (90 s) from this call. **The daemon writes to
 the device at once**, not at its next 60-second poll: measured on hardware,

@@ -602,6 +602,12 @@ void loop() {
                 Serial.println("host asked to wake the panel");
                 idle_note_activity();
             }
+            // A host that names an animation is reporting live state (an agent
+            // working, waiting, done): keep the panel lit for as long as it
+            // does, and light it when it starts. Every payload counts — the
+            // daemon writes at least once a minute and at once on a change —
+            // so the idle timer only runs once the host hands back ("").
+            if (usage.anim[0]) idle_note_activity();
             if (g_after != g_before) {
                 Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
                     g_before, g_after, usage.session_pct);

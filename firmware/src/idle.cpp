@@ -119,6 +119,7 @@ void idle_tick(void) {
         if (elapsed >= dur) {
             apply_brightness(fade_to);
             state = (state == STATE_FADING_OUT) ? STATE_ASLEEP : STATE_AWAKE;
+            Serial.println(state == STATE_ASLEEP ? "idle: screen off" : "idle: screen on");
         } else {
             // Linear interpolation fade_from -> fade_to over dur ms.
             int32_t span = (int32_t)fade_to - (int32_t)fade_from;
