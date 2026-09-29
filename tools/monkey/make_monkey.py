@@ -202,18 +202,42 @@ def draw_head(d, p: Pose):
         D([(11, 11 + gy), (23, 11 + gy)], "white")
 
 
+def raise_arm(d, p: Pose, side: int, sway: int):
+    """One arm raised from the shoulder: sleeve cap, a slanted furry arm with a
+    dark outer edge, a round hand. side +1 = his left (image right), -1 = the
+    other. `sway` tilts the hand outward by that many pixels (waving).
+
+    The arm has to grow out of the shirt: drawn as a free-standing bar beside
+    the head it read as a limb cut off at the shoulder.
+    """
+    ox, oy = p.dx, p.dy
+    def X(x):                                  # mirror around the centre (19.5)
+        return x if side > 0 else 39 - x
+    sh = (X(31) + ox, 31 + oy)                 # shoulder, inside the sleeve
+    el = (X(36 + sway) + ox, 13 + oy)          # wrist, up beside the head
+    d.line([sh, el], fill=C["dark"], width=5)  # outline
+    d.line([sh, el], fill=C["fur"], width=3)
+    d.line([(sh[0] + side, sh[1] - 1), (el[0] + side, el[1])], fill=C["light"])
+    hx, hy = el[0], el[1] - 4                  # hand above the wrist, clear of the ear
+    d.ellipse([hx - 2, hy - 2, hx + 2, hy + 3], fill=C["skin_sh"])
+    d.ellipse([hx - 2, hy - 2, hx + 1, hy + 2], fill=C["skin"])
+    # sleeve cap over the shoulder so the arm visibly leaves the shirt
+    x0, x1 = sorted((X(28) + ox, X(33) + ox))
+    d.rounded_rectangle([x0, 28 + oy, x1, 33 + oy], 2, fill=C["shirt_sh"])
+    d.rounded_rectangle([x0 + (1 if side < 0 else 0), 28 + oy,
+                         x1 - (1 if side > 0 else 0), 32 + oy], 2, fill=C["shirt"])
+
+
 def draw_arms(d, p: Pose):
     """Gestures that cross the head or body, drawn last."""
     ox, oy = p.dx, p.dy
     def R(x0, y0, x1, y1, col):
         d.rectangle([x0 + ox, y0 + oy, x1 + ox, y1 + oy], fill=C[col])
-    if p.arms in ("wave", "wave2"):          # right arm up beside the head
-        R(34, 18, 37, 31, "fur"); R(34, 18, 34, 31, "dark")
-        hx = 33 if p.arms == "wave" else 35
-        R(hx, 12, hx + 4, 17, "skin"); R(hx, 16, hx + 4, 17, "skin_sh")
+    if p.arms in ("wave", "wave2"):          # right arm raised, hand waving
+        raise_arm(d, p, +1, 0 if p.arms == "wave" else 1)
     elif p.arms == "up":                      # both arms up (dance)
-        R(34, 18, 37, 31, "fur"); R(34, 13, 37, 17, "skin")
-        R(2, 18, 5, 31, "fur"); R(2, 13, 5, 17, "skin")
+        raise_arm(d, p, +1, 0)
+        raise_arm(d, p, -1, 0)
     elif p.arms == "thumb":                   # thumbs up in front of the chest
         R(30, 30, 33, 36, "fur")
         R(25, 27, 31, 32, "skin"); R(25, 31, 31, 32, "skin_sh")
