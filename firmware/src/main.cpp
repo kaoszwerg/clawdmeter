@@ -119,7 +119,10 @@ static bool parse_json(const char* json, UsageData* out) {
     out->weekly_pct = doc["w"] | 0.0f;
     out->weekly_reset_mins = doc["wr"] | -1;
     strlcpy(out->status, doc["st"] | "unknown", sizeof(out->status));
-    out->chime = doc["c"] | false;   // absent (old daemon / chime off) → stay silent
+    // as<bool>(), not `| false`: the daemon sends these as 1, and ArduinoJson's
+    // `| false` returns the default for anything that is not a JSON bool —
+    // which kept "c":1 from ever turning the chime on. Absent reads as false.
+    out->chime = doc["c"].as<bool>();   // absent (old daemon / chime off) → stay silent
     const char* acct = doc["acct"] | "pro";
     out->enterprise = (strcmp(acct, "ent") == 0);
     out->time_pct = doc["tp"] | 0;
@@ -128,6 +131,13 @@ static bool parse_json(const char* json, UsageData* out) {
     strlcpy(out->anim, doc["a"] | "", sizeof(out->anim));
     out->clock_epoch = doc["t"] | 0L;
     out->clock_fmt = doc["tf"] | 24;
+    out->sleep_min = doc["sl"] | -1;
+    out->bar_color = -1;
+    const char* bc = doc["bc"] | "";
+    if (strlen(bc) == 6 && strspn(bc, "0123456789abcdefABCDEF") == 6) {
+        out->bar_color = strtol(bc, nullptr, 16);
+    }
+    out->wake = doc["wk"].as<bool>();
     out->ok = doc["ok"] | false;
     out->valid = true;
     return true;
@@ -583,6 +593,15 @@ void loop() {
             // Host-driven animation. Sent only when the host is configured to
             // mirror its desktop buddy; absent → "" → device keeps deciding.
             splash_set_anim(usage.anim);
+            // Display settings from the daemon's config, and a wake-up when
+            // the host has something that must be seen (a question waiting).
+            // Absent fields keep what is set, so an older daemon changes nothing.
+            if (usage.sleep_min >= 0) idle_set_timeout_min(usage.sleep_min);
+            if (usage.bar_color >= 0) ui_set_bar_color((uint32_t)usage.bar_color);
+            if (usage.wake) {
+                Serial.println("host asked to wake the panel");
+                idle_note_activity();
+            }
             if (g_after != g_before) {
                 Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
                     g_before, g_after, usage.session_pct);

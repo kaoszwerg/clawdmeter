@@ -240,3 +240,22 @@ def test_errors_are_json(server):
     assert _call(srv, "POST", "/api/status", {"status": "red"})[0] == 400
     assert _call(srv, "GET", "/api/nope")[0] == 404
     assert _call(srv, "GET", "/api/keepalive")[0] == 405
+
+
+# ---------------------------------------------------------------------------
+# Waking the panel
+# ---------------------------------------------------------------------------
+
+def test_busy_and_call_wake_once_other_signals_do_not():
+    s = HostState(clock=Clock())
+    s.claim({"status": "away"})
+    assert s.take_wake() is False
+    s.claim({"status": "busy"})
+    assert s.take_wake() is True
+    assert s.take_wake() is False          # one-shot
+    s.claim({"status": "busy"})             # renewal, not a change
+    assert s.take_wake() is False
+    s.claim({"status": "call"})
+    assert s.take_wake() is True
+    s.claim({"anim": "allow"})              # raw anim never wakes
+    assert s.take_wake() is False

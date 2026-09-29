@@ -49,3 +49,16 @@ clock = off
 #   api_port = 47280 (default)
 # api = on
 # api_port = 47280
+
+# Screen-off timeout (Windows daemon). The panel fades to black after this many
+# minutes without a touch or key press; touching or pressing wakes it. A host
+# API claim of "busy" or "call" (a question is waiting, a fault) also wakes it.
+#   <minutes> = 1..1440
+#   off       = never switch the screen off
+# Unset (default) = the firmware's own 30 minutes.
+# sleep = 30
+
+# Colour of the usage gauges' normal fill (bars below 50 %, the rings on round
+# panels). The amber (from 50 %) and red (from 80 %) warnings on the bars stay.
+# Unset (default) = the theme colour (green bars, terracotta rings).
+# bar_color = #3fa9f5

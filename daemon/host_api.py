@@ -49,6 +49,10 @@ ANIMATIONS = (
     "done", "think", "write", "allow", "limit",
 )
 
+# Claims of these signals also light a dark panel: they are the two states
+# that exist to be seen (a question waiting on you, a hidden fault).
+WAKE_SIGNALS = ("busy", "call")
+
 # The six VITI signal words, and what the device plays for each. The mapping
 # is the device side's to keep — a client names a meaning, not a picture.
 # "off" has no animation: it releases the claim, so the device goes back to
@@ -95,6 +99,7 @@ class HostState:
         self._shown: str | None = None      # None = nothing written this link
         self._written_at: float | None = None
         self._error: str | None = None
+        self._wake_pending = False
         # wake-up for the daemon loop; attached per asyncio loop
         self._loop: asyncio.AbstractEventLoop | None = None
         self._changed: asyncio.Event | None = None
@@ -120,6 +125,16 @@ class HostState:
         with self._lock:
             self._expire_locked()
             return self._anim
+
+    def take_wake(self) -> bool:
+        """True once after a claim that should light the panel."""
+        with self._lock:
+            pending, self._wake_pending = self._wake_pending, False
+            return pending
+
+    def request_wake(self) -> None:
+        with self._lock:
+            self._wake_pending = True
 
     def set_link(self, connected: bool, address: str | None = None) -> None:
         with self._lock:
@@ -177,6 +192,8 @@ class HostState:
             target = anim
         with self._lock:
             changed = target != self._anim
+            if changed and signal in WAKE_SIGNALS:
+                self._wake_pending = True
             self._signal = signal
             self._anim = target
             self._claimed_until = self._clock() + CLAIM_SECONDS
@@ -259,6 +276,7 @@ def info() -> dict:
         "claim_s": CLAIM_SECONDS,
         "keepalive_s": KEEPALIVE_SECONDS,
         "signals": {k: v for k, v in SIGNALS.items()},
+        "wake_signals": list(WAKE_SIGNALS),
         "animations": list(ANIMATIONS),
     }
 

@@ -10,6 +10,10 @@ enum screen_t {
 
 void ui_init(void);
 void ui_update(const UsageData* data);
+
+// Colour of the gauges' normal fill (bars below 50 %, rings always), set from
+// the daemon's `bar_color`. The amber / red warning colours stay as they are.
+void ui_set_bar_color(uint32_t rgb);
 void ui_tick_anim(void);
 void ui_show_screen(screen_t screen);
 void ui_toggle_splash(void);

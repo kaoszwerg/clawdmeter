@@ -16,6 +16,10 @@ struct UsageData {
                              // has no opinion, device picks by usage rate)
     long clock_epoch;        // local wall-clock epoch (s) from daemon; 0 = not provided
     int  clock_fmt;          // 12 or 24 (hour format from daemon); defaults to 24
+    int  sleep_min;          // screen-off after this many idle minutes; 0 = never,
+                             // -1 = not sent (keep the firmware default)
+    long bar_color;          // 0xRRGGBB for the normal gauge fill; -1 = not sent
+    bool wake;               // host asks to light the panel now (e.g. a question waits)
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
 };

@@ -18,6 +18,7 @@ static uint32_t fade_last_step_ms = 0;
 static uint8_t  fade_from = DISPLAY_DEFAULT_BRIGHTNESS;
 static uint8_t  fade_to   = 0;
 static uint8_t  awake_brightness = DISPLAY_DEFAULT_BRIGHTNESS;  // user-set "full" level (brightness.cpp)
+static uint32_t timeout_ms = IDLE_TIMEOUT_MS;   // 0 = never sleep (daemon "sl":0)
 
 static void apply_brightness(uint8_t b) {
     display_hal_set_brightness(b);
@@ -71,6 +72,19 @@ bool idle_consume_wake_press(void) {
     return false;
 }
 
+void idle_set_timeout_min(int minutes) {
+    uint32_t ms = minutes <= 0 ? 0 : (uint32_t)minutes * 60UL * 1000UL;
+    if (ms == timeout_ms) return;
+    timeout_ms = ms;
+    if (ms) Serial.printf("idle: screen-off after %d min\n", minutes);
+    else    Serial.println("idle: screen-off never");
+    // Switched to "never" while dark: light up again, the user just asked
+    // for a screen that stays on.
+    if (ms == 0 && (state == STATE_ASLEEP || state == STATE_FADING_OUT)) {
+        idle_note_activity();
+    }
+}
+
 bool idle_is_asleep(void) {
     return state == STATE_ASLEEP || state == STATE_FADING_OUT;
 }
@@ -90,7 +104,7 @@ void idle_tick(void) {
 
     switch (state) {
     case STATE_AWAKE:
-        if (now - last_activity_ms >= IDLE_TIMEOUT_MS) {
+        if (timeout_ms && now - last_activity_ms >= timeout_ms) {
             begin_fade(0, now);
             state = STATE_FADING_OUT;
         }

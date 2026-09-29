@@ -20,3 +20,7 @@ bool idle_consume_wake_press(void);
 // sleeves, etc.). Callers use this to silently drop touch events while the
 // panel is dark.
 bool idle_is_asleep(void);
+
+// Screen-off timeout in minutes, set by the daemon (payload "sl"). 0 = never
+// sleep. Until the daemon sends one, IDLE_TIMEOUT_MS from idle_cfg.h applies.
+void idle_set_timeout_min(int minutes);

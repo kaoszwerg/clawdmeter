@@ -137,6 +137,7 @@ it replaces any hard-coded list in the client.
     "free": "done",
     "off": ""
   },
+  "wake_signals": ["busy", "call"],
   "animations": [
     "dance bounce dj", "dance sway dj", "dance djmix",
     "idle breathe", "idle blink", "idle look around",
@@ -244,6 +245,13 @@ Body: **exactly one** of
 - `anim`: any name from `/api/info`'s `animations`, played verbatim. This is for
   what the ladder does not cover, e.g. a celebration. Prefer `status` for the
   ladder itself, so the mapping stays in one place.
+
+**Claims of `busy` and `call` also light a dark panel.** The device switches
+its screen off after a spell without touches (`sleep` in the daemon config,
+30 min by default), and those are the two states that exist to be seen. The
+wake fires once, when the claim *changes* into one of them. Renewals do not
+wake, and neither do the other signals or a raw `anim`. `/api/info` lists
+them as `wake_signals`.
 
 The claim leads for `claim_s` (90 s) from this call. **The daemon writes to
 the device at once**, not at its next 60-second poll: measured on hardware,
@@ -363,7 +371,7 @@ it is *what the device displays*, so it confirms the device is current.
 |---|---|---|
 | Brightness | not in the BLE protocol; the device sets it with its own keys | a payload field + firmware change |
 | Forcing a screen (splash / usage) | same | same |
-| A dark / off state | the device has none; it always shows usage | firmware change |
+| A dark / off state | the device has none; it always shows usage. (It does switch its screen off after `sleep` minutes without a touch, set in the daemon config, not through the API) | firmware change |
 | The device's buttons | they are a BLE **HID keyboard** straight to Windows (BOOT = Space, the secondary = Shift+Tab). They never pass through the daemon | nothing — they already work in any terminal |
 | Pairing | on the device (hold PWR) and in Windows Bluetooth settings | — |
 | macOS / Linux | the API is in the Windows daemon only | the same module in `claude_usage_daemon.py` |

@@ -952,6 +952,18 @@ void ui_init(void) {
     charge_anim_init(scr);
 }
 
+void ui_set_bar_color(uint32_t rgb) {
+    lv_color_t c = lv_color_hex(rgb);
+    if (lv_color_eq(c, L.gauge_ok)) return;
+    L.gauge_ok = c;
+    // Rings are coloured once at creation and never by level, so repaint
+    // them here; bars pick the new colour up on the next ui_update().
+    if (L.round) {
+        if (bar_session) lv_obj_set_style_arc_color(bar_session, c, LV_PART_INDICATOR);
+        if (bar_weekly)  lv_obj_set_style_arc_color(bar_weekly, c, LV_PART_INDICATOR);
+    }
+}
+
 void ui_update(const UsageData* data) {
     if (!data->valid) return;
     last_data_ms = lv_tick_get();   // a valid usage update just landed → dot goes green

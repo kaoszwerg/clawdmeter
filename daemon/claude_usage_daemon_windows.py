@@ -199,6 +199,54 @@ def add_chime_field(payload: dict) -> None:
         payload["c"] = 1
 
 
+def add_display_fields(payload: dict) -> None:
+    """Screen-off timeout and gauge colour from the config, when set.
+
+    sleep     = <minutes> | off   -> "sl": minutes (0 = never sleep)
+    bar_color = #RRGGBB           -> "bc": "rrggbb"
+    Unset keys add nothing, so the firmware keeps its own defaults (30 min,
+    the theme colour). Unparsable values are ignored the same way.
+    """
+    sleep = read_config_value("sleep")
+    if sleep is not None:
+        if sleep in ("off", "never", "0"):
+            payload["sl"] = 0
+        else:
+            try:
+                minutes = int(sleep)
+            except ValueError:
+                minutes = -1
+            if 0 < minutes <= 24 * 60:
+                payload["sl"] = minutes
+    color = _read_color_value("bar_color")
+    if color is not None:
+        payload["bc"] = color
+
+
+def _read_color_value(key: str) -> str | None:
+    """`key = #RRGGBB` as "rrggbb", or None.
+
+    Not read_config_value(): its comment stripping would eat the value, since
+    a colour is written with the same "#" that starts a comment. The value is
+    the first word after "=", so "bar_color = #3fa9f5  # blue" still works.
+    """
+    try:
+        if not CONFIG_FILE.exists():
+            return None
+        for line in CONFIG_FILE.read_text().splitlines():
+            if "=" not in line or line.lstrip().startswith("#"):
+                continue
+            k, val = line.split("=", 1)
+            if k.strip().lower() != key:
+                continue
+            words = val.split()
+            color = words[0].lstrip("#").lower() if words else ""
+            return color if re.fullmatch(r"[0-9a-f]{6}", color) else None
+    except OSError:
+        pass
+    return None
+
+
 def detect_hour_format() -> int:
     """Best-effort 12h/24h detection on Windows via the registry. Returns 12 or 24."""
     try:
@@ -298,6 +346,7 @@ async def poll_api(token: str) -> dict | None:
         }
     add_chime_field(payload)   # adds "c":1 iff the config opts in
     add_clock_fields(payload)   # adds "t" + "tf" iff the config opts in
+    add_display_fields(payload)   # adds "sl" / "bc" iff the config sets them
     return payload
 
 
@@ -761,7 +810,12 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                 add_clock_fields(payload)
             if payload is not None:
                 payload["a"] = wanted
-                if await session.write_payload(payload):
+                # A claim that must be seen (busy / call) lights a dark panel.
+                # One-shot and never stored in last_payload, so a resend does
+                # not wake the device again.
+                wake = host_api.STATE.take_wake()
+                out = dict(payload, wk=1) if wake else payload
+                if await session.write_payload(out):
                     sent_anim = wanted
                     host_api.STATE.set_written(wanted)
                     if payload is last_payload:
@@ -771,6 +825,8 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                     if tray_state:
                         tray_state.set_connected(time.time())
                 else:
+                    if wake:
+                        host_api.STATE.request_wake()   # deliver it with the retry
                     host_api.STATE.set_error("write to the device failed")
                     consecutive_failures += 1
                     if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
