@@ -248,6 +248,11 @@ static void compute_layout(const BoardCaps& c) {
         L.idle_px = 160;
         L.bt_status_font = &font_styrene_28;
         L.bt_device_font = &font_styrene_20;
+        // The top-right corner is outside the circle and the top centre holds
+        // the rings' 50 % mark, so the battery icon (LCD-1.46, the round
+        // board with a battery) sits centred in the free band between the
+        // weekly reset line and the status line, where the rings have their gap.
+        L.batt_y = (int16_t)(mind * 300 / 412);
     }
 
     L.content_w = L.scr_w - 2 * L.margin;
@@ -929,7 +934,9 @@ void ui_init(void) {
 
     battery_img = lv_image_create(scr);
     lv_image_set_src(battery_img, &battery_dscs[0]);
-    lv_obj_set_pos(battery_img, L.scr_w - L.batt_w - L.margin, L.batt_y);
+    lv_obj_set_pos(battery_img,
+                   L.round ? (L.scr_w - L.batt_w) / 2 : L.scr_w - L.batt_w - L.margin,
+                   L.batt_y);
     // Boards without battery telemetry never show the indicator (per the HAL
     // contract; previously every board drew the empty-battery glyph).
     if (!board_caps().has_battery) {

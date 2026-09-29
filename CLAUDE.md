@@ -6,7 +6,7 @@ selected via PlatformIO's `build_src_filter`. Adding a board means dropping in
 a new folder + a new `[env:...]` block — `main.cpp`, `ui.cpp`, and `splash.cpp`
 never see board-specific code. See [`docs/porting/adding-a-board.md`](docs/porting/adding-a-board.md).
 
-Seven ports today (two SoC families, five panel sizes, AMOLED + two TFTs, one round):
+Eight ports today (two SoC families, six panel sizes, AMOLED + three TFTs, two round):
 
 - `boards/waveshare_amoled_216/` — original Waveshare ESP32-S3-Touch-AMOLED-2.16 (CO5300, 480×480 square, CST9220 touch, IMU rotation). Build env: `waveshare_amoled_216`.
 - `boards/waveshare_amoled_18/` — Waveshare ESP32-S3-Touch-AMOLED-1.8 (368×448 portrait, XCA9554 IO expander). Build env: `waveshare_amoled_18`. **Two panel revisions are auto-detected at boot** (`board_rev()` in `board_init.cpp`, enum in `board_rev.h`): original = SH8601 display + FT3168 touch (0x38); later = CO5300 display + CST816 touch (0x15). One binary drives both.
@@ -14,7 +14,8 @@ Seven ports today (two SoC families, five panel sizes, AMOLED + two TFTs, one ro
 - `boards/waveshare_amoled_18_c6/` — Waveshare ESP32-C6-Touch-AMOLED-1.8 (368×448 portrait, SH8601, FT3168 touch, TCA9554 expander). Build env: `waveshare_amoled_18_c6`. Same panel as the S3 1.8 but on the C6 SoC. All subsystems (display, touch, BOOT + PWR buttons, battery, BLE) verified on hardware.
 - `boards/waveshare_amoled_206/` — Waveshare ESP32-S3-Touch-AMOLED-2.06 (CO5300, 410×502 watch form factor, FT3168 touch, no IO expander, 32 MB flash, PCF85063 RTC, ES8311 codec). Build env: `waveshare_amoled_206`. Display, touch, battery, IMU init, and BLE verified on hardware; the ES8311 chime path is not wired up (`sound.cpp` no-ops).
 - `boards/waveshare_lcd_154/` — Waveshare ESP32-S3-Touch-LCD-1.54 (**ST7789 TFT** over plain 4-wire SPI, 240×240, CST816 touch, no PMU, ES8311 speaker). Build env: `waveshare_lcd_154`. The only non-AMOLED port and the only one below 300 px, which is why `compute_layout()` has a "small" breakpoint.
-- `boards/waveshare_knob_18/` — Waveshare ESP32-S3-Knob-Touch-LCD-1.8 (**round** 360×360 ST77916 TFT over QSPI, CST816 touch, rotary ring, DRV2605 haptics, no PMU). Build env: `waveshare_knob_18`. The only round panel (`BoardCaps.is_round` → ring-gauge layout) and the only board with a rotary ring (`has_encoder`).
+- `boards/waveshare_knob_18/` — Waveshare ESP32-S3-Knob-Touch-LCD-1.8 (**round** 360×360 ST77916 TFT over QSPI, CST816 touch, rotary ring, DRV2605 haptics, no PMU). Build env: `waveshare_knob_18`. The first round panel (`BoardCaps.is_round` → ring-gauge layout) and the only board with a rotary ring (`has_encoder`).
+- `boards/waveshare_lcd_146/` — Waveshare ESP32-S3-Touch-LCD-1.46 / 1.46B (**round** 412×412 **SPD2010** TFT over QSPI; the same chip is the touch controller on I2C 0x53, TCA9554 gates both resets, GPIO power latch, battery ADC, no PMU). Build env: `waveshare_lcd_146`. The round board with a battery — on round panels the battery icon sits centred in the rings' bottom gap.
 
 **C6 ports have no PSRAM** — shared code gates on `BOARD_HAS_PSRAM` (absent on C6) to use `MALLOC_CAP_INTERNAL` for LVGL/splash buffers, and the `screenshot` serial command is disabled (`LV_USE_SNAPSHOT=0`), so UI changes on a C6 board must be eyeballed on hardware, not auto-captured.
 
@@ -72,6 +73,15 @@ Pin map cross-checked against Waveshare's own XiaoZhi board config (`main/boards
 - IMU QMI8658 and RTC PCF85063 present, unused. Orientation fixed (no auto-rotation) — see the quarter turn left above.
 - Buttons (labels printed on the case): **BOOT = GPIO 0** (Space), **PLUS = GPIO 4** (Shift+Tab), **PWR = GPIO 5** (cycle screens, hold-to-pair, 8 s = power off). All plain active-LOW GPIOs; PWR edges are synthesized in software in `power.cpp`.
 
+### LCD-1.46 (round TFT) — `waveshare_lcd_146`
+Pins from Waveshare's demo package (Arduino `LVGL_Arduino`, ESP-IDF `ESP32-S3-Touch-LCD-1.46-Test`) checked against the schematic. ESP32-S3R8, 16 MB flash, 8 MB PSRAM (esptool-verified). 1.46 and 1.46B differ only in the cover glass.
+- **Power latch = GPIO 7 (`BAT_Control`).** The PWR key only powers the board while held; firmware must drive GPIO 7 HIGH or a battery-powered board dies on release. This is why flashing another board's firmware makes the 1.46 look dead. Raised in `initVariant()` (runs before `setup()`), not `board_init()`, to keep the power-on press short. PWR key reads on **GPIO 6** (`Key_BAT`, active LOW); hold 8 s = latch off + deep sleep.
+- Display: **SPD2010** via QSPI (CS=21, SCLK=40, SDIO0..3=46,45,42,41, TE=18 unused), 412×412, stock `Arduino_SPD2010` (its init table matches Waveshare's). **Column windows must start on 4N and end on 4N+3** (`display_hal_round_area`). Backlight LEDC PWM on GPIO 5.
+- Touch: the SPD2010's touch half @ I2C 0x53 (SDA=11, SCL=10, INT=4), 16-bit register addresses and a BIOS → CPU → point-mode start-up state machine, ported inline from Waveshare's `Touch_SPD2010.cpp`.
+- **TCA9554 @ 0x20**: EXIO1 = touch reset, EXIO2 = LCD reset, EXIO3 = SD CS. `board_init()` pulses both resets before display/touch init.
+- Battery: 3:1 divider on GPIO 8. No charger-status line, no VBUS sense.
+- PCM5101 speaker DAC (not ES8311 — no chime), QMI8658, PCF85063: present, unused.
+
 ### Knob-1.8 (round TFT) — `waveshare_knob_18`
 Pins from Waveshare's demo package (`08_LVGL_Test/lcd_config.h`, `04_Encoder_Test`, `03_DRV2605_Test`) checked against the schematic. ESP32-S3R8, 16 MB flash. A second MCU (ESP32-U4WDH) owns classic-BT audio and the second ring encoder; the port never talks to it.
 - Display: **ST77916** via QSPI (CS=14, SCLK=13, SDIO0..3=15..18, RST=21), 360×360, only the inscribed circle visible. **Neither of Arduino_GFX's two ST77916 init tables fits this panel** — `display.cpp` carries Waveshare's 181-command vendor table in GFX batch-op form, plus COLMOD 0x55 (esp_lcd set it implicitly). 40 MHz, even-aligned flush regions. **Backlight = LEDC PWM on GPIO 47.** **Mounted 180° (USB-C at the top)** — `LCD_ROTATION_180` in `board.h` sets GFX rotation 2 (MADCTL MX|MY, free) and `touch.cpp` mirrors both axes to match.
@@ -100,6 +110,7 @@ firmware/src/
     waveshare_amoled_206/   — CO5300 + FT3168 + AXP PKEY, no IO expander, 32 MB, no rotation
     waveshare_lcd_154/      — ST7789 SPI TFT + CST816 + GPIO buttons, no PMU (ADC battery), 240×240
     waveshare_knob_18/      — round ST77916 QSPI TFT + CST816 + rotary ring + DRV2605, 360×360
+    waveshare_lcd_146/      — round SPD2010 QSPI TFT + SPD2010 touch + TCA9554 + GPIO power latch, 412×412
     template/               — copy this to bootstrap a new port
   main.cpp                  — setup() + loop(): HAL calls only, zero #ifdef BOARD_*
   ui.{h,cpp}                — 3-screen UI (splash, usage, bluetooth). compute_layout() picks fonts/positions from board_caps() (responsive — breakpoints: H >= 460 → large, H >= 300 → compact, else small)
@@ -129,6 +140,7 @@ pio run -d firmware -e waveshare_amoled_18_c6                                   
 pio run -d firmware -e waveshare_amoled_206                                     # build 2.06 (S3, watch)
 pio run -d firmware -e waveshare_lcd_154                                        # build LCD-1.54 (S3, TFT)
 pio run -d firmware -e waveshare_knob_18                                        # build Knob-1.8 (S3, round TFT)
+pio run -d firmware -e waveshare_lcd_146                                        # build LCD-1.46 (S3, round TFT)
 pio run -d firmware -e waveshare_amoled_18 -t upload --upload-port /dev/cu.usbmodem101   # flash 1.8 on macOS
 pio run -d firmware -e waveshare_amoled_216 -t upload --upload-port /dev/ttyACM0         # flash 2.16 on Linux
 # C6 boards: same native USB-JTAG flashing; flag a chip mismatch ("This chip is ESP32-C6,
