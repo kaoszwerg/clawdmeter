@@ -12,6 +12,11 @@
 // Custom fonts (scaled for 314 PPI, ~1.9x from original 165 PPI)
 LV_FONT_DECLARE(font_tiempos_56);
 LV_FONT_DECLARE(font_tiempos_34);
+// Title "Usage" (and the clock in its place): Share Tech Mono, SIL OFL,
+// assets/ShareTechMono-Regular.ttf. Sized up from the 56/34 slots it
+// replaces, since the face runs smaller than Tiempos at the same px.
+LV_FONT_DECLARE(font_sharetech_60);
+LV_FONT_DECLARE(font_sharetech_38);
 LV_FONT_DECLARE(font_styrene_48);
 LV_FONT_DECLARE(font_styrene_28);
 LV_FONT_DECLARE(font_styrene_24);
@@ -108,7 +113,7 @@ static void compute_layout(const BoardCaps& c) {
     L.panel_pad_y = 12;
     L.pill_pad_x = 18;
     L.pill_pad_y = 6;
-    L.title_font   = &font_tiempos_56;
+    L.title_font   = &font_sharetech_60;
     L.pct_font     = &font_styrene_48;
     L.ent_pct_font = &font_tiempos_56;
     L.pill_font    = &font_styrene_28;
@@ -174,7 +179,7 @@ static void compute_layout(const BoardCaps& c) {
         L.panel_pad_y = 6;
         L.pill_pad_x = 8;
         L.pill_pad_y = 2;
-        L.title_font   = &font_tiempos_34;
+        L.title_font   = &font_sharetech_38;
         L.pct_font     = &font_styrene_24;
         L.ent_pct_font = &font_tiempos_34;
         L.pill_font    = &font_styrene_14;
@@ -223,7 +228,7 @@ static void compute_layout(const BoardCaps& c) {
         // track, so the unfilled part of the scale is visible too.
         L.gauge_track = THEME_RING_BG;
         L.gauge_ok    = THEME_ACCENT;
-        L.title_font   = &font_tiempos_34;
+        L.title_font   = &font_sharetech_38;
         L.title_y = 62;
         L.title_nudge = 0;
         L.pct_font      = &font_styrene_48;
