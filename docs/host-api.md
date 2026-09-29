@@ -51,6 +51,15 @@ after each short look at the usage (and the user can switch with the PWR key).
 A claim is therefore always *in effect*, but visible whenever the splash is up.
 There is no API to force a screen (see §8).
 
+**Without a claim the device shows only neutral animations.** It rotates every
+20 s through sleep / breathe / blink / look around / wink / dances, with the
+group picked by how fast the quota is being used. The animations that stand
+for a state are kept out of that rotation: `allow`, `done`, `work coding`,
+`work think`, `think`, `write`, `limit` and `expression surprise`. So they
+appear only when a host claims them, and "waiting for your approval" on the
+device always means a client said so. (Pressing PWR on the device still steps
+through every animation by hand.)
+
 ---
 
 ## 2. Finding the API and the key
@@ -58,7 +67,7 @@ There is no API to force a screen (see §8).
 | What | Where |
 |---|---|
 | Base URL | `http://127.0.0.1:47280` |
-| Port override | `api_port = <n>` in `%LOCALAPPDATA%\Clawdmeter\config` |
+| Port override | `api_port = <n>` in `%LOCALAPPDATA%\Clawdmeter\config` (plain `key = value` lines, `#` comments). Only needed if 47280 is taken on the machine. **Clients should not parse that file**: offer a port field (default 47280) beside the key instead |
 | Switch off | `api = off` in the same file (default: on) |
 | Bearer key | `%LOCALAPPDATA%\Clawdmeter\api-key` (one line, created on first start) |
 | Key for the user | tray icon → **Copy API key** |
@@ -85,7 +94,10 @@ Every endpoint except `GET /api/info` needs
 Authorization: Bearer <key>
 ```
 
-Errors are JSON with one field, and the status code carries the meaning:
+Errors are JSON with one field, and **the status code carries the meaning**.
+The `error` text is for logs: its wording is not part of the contract and may
+change. A client should show its own sentence, keyed on the code (and on what
+it sent), and may put the daemon's text in a detail line or the log.
 
 ```json
 {"error": "missing or wrong bearer key"}
@@ -136,8 +148,12 @@ it replaces any hard-coded list in the client.
 }
 ```
 
-- `api` is the contract version. It goes up only on a breaking change; new
-  fields may appear at any time, so ignore fields you don't know.
+- `api` is the contract version. It goes up **only on a breaking change**
+  (a field removed or renamed, a meaning changed, an endpoint gone). New fields
+  and new animation names appear without a bump, so ignore fields you don't
+  know. A client built for `api: 1` that sees any other number should **stop
+  driving the device and say so** ("Clawdmeter daemon speaks API v2, this
+  version of yggshell knows v1"), not guess.
 - `signals` maps each VITI word to the animation the device plays for it. The
   mapping belongs to the daemon (see §5).
 - `animations` is every name the firmware knows, taken from the firmware table
@@ -154,6 +170,7 @@ Everything the daemon knows. Also the answer of every `POST`.
   "status": "busy",
   "anim": "allow",
   "shown": "allow",
+  "paired": true,
   "connected": true,
   "address": "44:1B:F6:83:F3:41",
   "battery": 100,
@@ -178,6 +195,7 @@ Everything the daemon knows. Also the answer of every `POST`.
 | `status` | string \| null | the signal word that was claimed; `null` if the claim was a raw `anim` or there is none |
 | `anim` | string | the animation the claim asks for; `""` = the device's own choice |
 | `shown` | string \| null | the `anim` value the **last successful BLE write** carried. `null` = nothing written on this link yet. **Not a read-back**: the firmware has no way to report what it plays, but a write that succeeded is taken by the firmware (serial log: `splash: host -> …`) |
+| `paired` | bool \| null | Windows lists at least one paired Clawdmeter. `null` = the daemon has not looked yet (the first second after start). Updated on every connection attempt |
 | `connected` | bool | the daemon holds a BLE link to the device |
 | `address` | string \| null | BLE address of the device (the last one, if disconnected) |
 | `battery` | int \| null | charge in %, from the device's Battery Level characteristic; `null` while disconnected or when the board has none |
@@ -188,10 +206,23 @@ Everything the daemon knows. Also the answer of every `POST`.
 | `usage.account` | `"pro"` \| `"ent"` | plan type |
 | `usage.updated_at` | int | Unix time of that reading |
 | `written_at` | int \| null | Unix time of the last successful write to the device |
-| `error` | string \| null | the last write failure; cleared by the next successful write |
+| `error` | string \| null | the last **write** failure; cleared by the next successful write. Nothing else sets it: a missing, unpaired or switched-off device is `null` here, not an error |
 
-`battery`, `shown` and `address` are about the device; they go `null` the
-moment the link drops, because a stale value is worse than none.
+`battery` and `shown` are about the device; they go `null` the moment the link
+drops, because a stale value is worse than none. `address` keeps the last
+connected device for the life of the daemon process.
+
+**Reading the device state for a panel** (absent values are not faults):
+
+| `paired` | `connected` | Means | Say |
+|---|---|---|---|
+| `null` | `false` | daemon just started | "looking for the device" |
+| `false` | `false` | no Clawdmeter is paired with Windows | "no device paired" |
+| `true` | `false` | paired, but off / out of range / reconnecting | "device not reachable" |
+| `true` | `true` | linked | show `battery`, `shown`, `usage` |
+
+`usage` stays `null` until the first reading reached a connected device: the
+daemon only polls the quota while it holds a link.
 
 ### `POST /api/status` — claim
 
@@ -206,7 +237,10 @@ Body: **exactly one** of
 ```
 
 - `status`: one of the six VITI words. The daemon maps it (§5). `"off"`
-  releases the claim instead of claiming.
+  releases the claim instead of claiming, and its answer is **exactly** the
+  answer of `POST /api/release`: `source: "device"`, `hold_s: 0`,
+  `status: null`, `anim: ""`. There is nothing to tell the two apart by, and
+  nothing that needs to be.
 - `anim`: any name from `/api/info`'s `animations`, played verbatim. This is for
   what the ladder does not cover, e.g. a celebration. Prefer `status` for the
   ladder itself, so the mapping stays in one place.

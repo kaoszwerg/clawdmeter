@@ -50,19 +50,23 @@ static uint8_t group_size[GROUP_COUNT] = {0};
 static uint8_t group_rotation[GROUP_COUNT] = {0};
 
 static const char* GROUP_NAMES[GROUP_COUNT][GROUP_MAX] = {
-    // Every animation in splash_anims[] should appear in exactly one group,
-    // otherwise it is only ever reachable by pressing PWR. The five Session
-    // Browser ones are sorted by mood, not by their buddy meaning — "limit"
-    // lands in heavy because that is when it reads as true here.
+    // Only animations that say nothing about what Claude is doing. The ones a
+    // host uses to report a state — allow, done, work coding, work think,
+    // think, write, limit and expression surprise (the host API's busy / free
+    // / away / focus / call) — stay out of the rotation: cycled in by mood,
+    // "allow" read as "waiting for your approval" while nothing was waiting.
+    // They play only when a host names them (splash_set_anim), or when PWR
+    // steps through every animation by hand. Blink appears twice so the
+    // normal-pace group has more than one idle to rotate through.
     //
     // Group 0 — idle / sleepy
-    { "expression sleep", "idle breathe", "idle blink", "expression wink", "done" },
+    { "expression sleep", "idle breathe", "idle blink", NULL, NULL },
     // Group 1 — normal pace
-    { "idle look around", "work think", "work coding", "think", "allow" },
+    { "idle look around", "expression wink", "idle blink", NULL, NULL },
     // Group 2 — active
-    { "dance sway", "expression surprise", "dance bounce", "write", NULL },
+    { "dance sway", "dance bounce", NULL, NULL, NULL },
     // Group 3 — heavy
-    { "dance bounce dj", "dance sway dj", "dance djmix", "limit", NULL },
+    { "dance bounce dj", "dance sway dj", "dance djmix", NULL, NULL },
 };
 
 // Host-driven animation (see splash_set_anim). -1 = no override, the usage-rate
