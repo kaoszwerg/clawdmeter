@@ -34,3 +34,7 @@ socialmedia/
 # in history would cost every clone, forever. Attach them to a GitHub Release
 # instead. Rebuild: see the ZIP contents listed in each package's README.
 dist/
+
+# Firmware toolchain venv (setup-dev.ps1): pio, esptool and PlatformIO's
+# platform/toolchain/library cache
+.venv-dev/
