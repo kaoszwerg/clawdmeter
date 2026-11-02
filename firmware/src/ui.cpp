@@ -10,8 +10,6 @@
 #include "hal/board_caps.h"
 
 // Custom fonts (scaled for 314 PPI, ~1.9x from original 165 PPI)
-LV_FONT_DECLARE(font_tiempos_56);
-LV_FONT_DECLARE(font_tiempos_34);
 // Title "Usage" (and the clock in its place): Share Tech Mono, SIL OFL,
 // assets/ShareTechMono-Regular.ttf. Sized up from the 56/34 slots it
 // replaces, since the face runs smaller than Tiempos at the same px.
@@ -48,7 +46,6 @@ struct Layout {
     int16_t pill_pad_x, pill_pad_y;
     const lv_font_t* title_font;     // screen title / clock
     const lv_font_t* pct_font;       // big percentage number
-    const lv_font_t* ent_pct_font;   // enterprise spending number
     const lv_font_t* pill_font;      // "Current" / "Weekly" pill
     const lv_font_t* reset_font;     // "Resets in ..." line
     const lv_font_t* pace_font;      // enterprise "Under/On/Over pace" line
@@ -115,7 +112,6 @@ static void compute_layout(const BoardCaps& c) {
     L.pill_pad_y = 6;
     L.title_font   = &font_sharetech_60;
     L.pct_font     = &font_styrene_48;
-    L.ent_pct_font = &font_tiempos_56;
     L.pill_font    = &font_styrene_28;
     L.reset_font   = &font_styrene_28;
     L.pace_font    = &font_styrene_16;
@@ -144,7 +140,7 @@ static void compute_layout(const BoardCaps& c) {
         L.usage_reset_y = 94;
         L.bt_info_panel_h = 160;
         L.bt_reset_zone_h = 110;
-        L.bt_title_font    = &font_tiempos_56;
+        L.bt_title_font    = &font_sharetech_60;
         L.bt_status_font   = &font_styrene_48;
         L.bt_device_font   = &font_styrene_28;
         L.bt_credit_1_font = &font_styrene_24;
@@ -158,7 +154,7 @@ static void compute_layout(const BoardCaps& c) {
         L.usage_reset_y = 78;
         L.bt_info_panel_h = 140;
         L.bt_reset_zone_h = 90;
-        L.bt_title_font    = &font_tiempos_34;
+        L.bt_title_font    = &font_sharetech_38;
         L.bt_status_font   = &font_styrene_28;
         L.bt_device_font   = &font_styrene_20;
         L.bt_credit_1_font = &font_styrene_16;
@@ -181,7 +177,6 @@ static void compute_layout(const BoardCaps& c) {
         L.pill_pad_y = 2;
         L.title_font   = &font_sharetech_38;
         L.pct_font     = &font_styrene_24;
-        L.ent_pct_font = &font_tiempos_34;
         L.pill_font    = &font_styrene_14;
         L.reset_font   = &font_styrene_14;
         L.pace_font    = &font_styrene_12;
@@ -200,7 +195,7 @@ static void compute_layout(const BoardCaps& c) {
         L.idle_px = 96;
         L.bt_info_panel_h = 90;
         L.bt_reset_zone_h = 60;
-        L.bt_title_font    = &font_tiempos_34;
+        L.bt_title_font    = &font_sharetech_38;
         L.bt_status_font   = &font_styrene_20;
         L.bt_device_font   = &font_styrene_14;
         L.bt_credit_1_font = &font_styrene_12;
@@ -232,7 +227,6 @@ static void compute_layout(const BoardCaps& c) {
         L.title_y = 62;
         L.title_nudge = 0;
         L.pct_font      = &font_styrene_48;
-        L.ent_pct_font  = &font_tiempos_56;
         L.week_pct_font = &font_styrene_28;
         L.pill_font     = &font_styrene_16;
         L.reset_font    = &font_styrene_16;
@@ -300,7 +294,6 @@ static lv_obj_t* lbl_weekly_reset;
 static lv_obj_t* panel_session = nullptr;
 static lv_obj_t* panel_weekly = nullptr;
 // Enterprise-only widgets inside panel_session
-static lv_obj_t* lbl_session_pct_sym = nullptr;  // "%" in smaller font
 static lv_obj_t* lbl_spending_desc = nullptr;     // "of your monthly budget"
 static lv_obj_t* lbl_spending_status = nullptr;   // "Under pace" / "On pace" / "Over pace"
 static lv_obj_t* lbl_anim;      // status line: connection state + whimsical idle
@@ -687,13 +680,7 @@ static void build_round_usage(lv_obj_t* parent) {
     lbl_session_pct   = make_centered_label(panel_session, "---%", L.pct_font, COL_TEXT, L.r_s_pct_y);
     lbl_session_reset = make_centered_label(panel_session, "---", L.reset_font, COL_DIM, L.r_s_reset_y);
 
-    // Enterprise-only overlays — hidden until enterprise data arrives.
-    lbl_session_pct_sym = lv_label_create(panel_session);
-    lv_label_set_text(lbl_session_pct_sym, "%");
-    lv_obj_set_style_text_font(lbl_session_pct_sym, L.reset_font, 0);
-    lv_obj_set_style_text_color(lbl_session_pct_sym, COL_TEXT, 0);
-    lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
-
+    // Enterprise-only overlay — hidden until enterprise data arrives.
     lbl_spending_desc = make_centered_label(panel_session, "of your monthly budget",
                                             L.reset_font, COL_DIM, L.r_s_reset_y);
     lv_obj_add_flag(lbl_spending_desc, LV_OBJ_FLAG_HIDDEN);
@@ -873,12 +860,6 @@ static void init_usage_screen(lv_obj_t* scr) {
                          &bar_session, &lbl_session_reset);
 
         // Enterprise-only overlays inside panel_session — hidden until enterprise data arrives
-        lbl_session_pct_sym = lv_label_create(panel_session);
-        lv_label_set_text(lbl_session_pct_sym, "%");
-        lv_obj_set_style_text_font(lbl_session_pct_sym, L.reset_font, 0);
-        lv_obj_set_style_text_color(lbl_session_pct_sym, COL_TEXT, 0);
-        lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
-
         lbl_spending_desc = lv_label_create(panel_session);
         lv_label_set_text(lbl_spending_desc, "of your monthly budget");
         lv_obj_set_style_text_font(lbl_spending_desc, L.reset_font, 0);
@@ -987,19 +968,19 @@ void ui_update(const UsageData* data) {
     int s_pct = (int)(data->session_pct + 0.5f);
 
     if (data->enterprise) {
-        // Spending box: big number-only label + small "%" symbol + desc + pace
-        lv_obj_set_style_text_font(lbl_session_pct, L.ent_pct_font, 0);
+        // Spending box: number + desc + pace
         lv_label_set_text(lbl_session_label, "Spending");
         lv_obj_add_flag(lbl_session_reset, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(lbl_spending_desc,   LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_spending_status,   LV_OBJ_FLAG_HIDDEN);
         if (panel_weekly) lv_obj_clear_flag(panel_weekly, LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_obj_set_style_text_font(lbl_session_pct, L.pct_font, 0);
-        lv_label_set_text(lbl_session_label, "Current");
+        // Weekly-only plans (no 5-hour window, e.g. Ultra): the daemon puts
+        // the 7-day limit in the session slot and the elapsed share of that
+        // week in time_pct, shown below like the Enterprise period box.
+        lv_label_set_text(lbl_session_label, data->weekly_only ? "Weekly"  : "Current");
+        lv_label_set_text(lbl_weekly_label,  data->weekly_only ? "Elapsed" : "Weekly");
         lv_obj_clear_flag(lbl_session_reset, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_spending_desc,   LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_spending_status, LV_OBJ_FLAG_HIDDEN);
         if (panel_weekly) lv_obj_clear_flag(panel_weekly, LV_OBJ_FLAG_HIDDEN);
@@ -1017,12 +998,9 @@ void ui_update(const UsageData* data) {
         pace_text = "On pace";    pace_color = COL_AMBER; pace_hex = "d97757";
     }
 
-    if (data->enterprise) {
-        lv_label_set_text_fmt(lbl_session_pct, "%d", s_pct);
-        lv_obj_align_to(lbl_session_pct_sym, lbl_session_pct,
-                        LV_ALIGN_OUT_RIGHT_TOP, 4, 12);
-    } else {
-        lv_label_set_text_fmt(lbl_session_pct, "%d%%", s_pct);
+    // Same font and "N%" form in every account mode.
+    lv_label_set_text_fmt(lbl_session_pct, "%d%%", s_pct);
+    if (!data->enterprise) {
         format_reset_time(data->session_reset_mins, buf, sizeof(buf));
         lv_label_set_text(lbl_session_reset, buf);
     }
@@ -1039,6 +1017,15 @@ void ui_update(const UsageData* data) {
         set_gauge(bar_weekly, data->time_pct, bar_pace);
         snprintf(buf, sizeof(buf), "#%s %s# - #faf9f5 Resets %s#",
                  pace_hex, pace_text, data->reset_date);
+        lv_label_set_text(lbl_weekly_reset, buf);
+    } else if (data->weekly_only) {
+        // Elapsed box: how far into the 7-day window we are, coloured by pace.
+        lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", data->time_pct);
+        lv_color_t bar_pace = (data->session_pct <= (float)data->time_pct) ? L.gauge_ok :
+                              (data->session_pct <= (float)data->time_pct + 15.0f) ? COL_AMBER :
+                              COL_RED;
+        set_gauge(bar_weekly, data->time_pct, bar_pace);
+        snprintf(buf, sizeof(buf), "#%s %s#", pace_hex, pace_text);
         lv_label_set_text(lbl_weekly_reset, buf);
     } else {
         int w_pct = (int)(data->weekly_pct + 0.5f);

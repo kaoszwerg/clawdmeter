@@ -534,3 +534,39 @@ def test_poll_api_does_not_log_token(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert secret_token not in captured.out, "Token leaked to stdout (T-02-01 violation)"
     assert secret_token not in captured.err, "Token leaked to stderr (T-02-01 violation)"
+
+
+def test_poll_api_weekly_only_plan():
+    """A plan without a 5h window (Ultra, Nov 2026) is reported as "wk", not as
+    Enterprise: the 7-day limit takes the session slot, tp is the elapsed week.
+    Headers as captured from the live API on 2026-11-02."""
+    now = time.time()
+    reset_7d = now + 2 * 86400            # 2 of 7 days left -> 71 % elapsed
+    mock_resp = _make_mock_response(
+        status_code=200,
+        headers={
+            "anthropic-ratelimit-unified-7d-utilization": "0.91",
+            "anthropic-ratelimit-unified-7d-reset": str(reset_7d),
+            "anthropic-ratelimit-unified-7d-status": "allowed_warning",
+            "anthropic-ratelimit-unified-overage-utilization": "0.0",
+            "anthropic-ratelimit-unified-overage-reset": str(now + 30 * 86400),
+            "anthropic-ratelimit-unified-status": "allowed_warning",
+        },
+    )
+
+    async def fake_post(*args, **kwargs):
+        return mock_resp
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = fake_post
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        payload = _run(poll_api("fake-token"))
+
+    assert payload["acct"] == "wk"
+    assert payload["s"] == 91
+    assert abs(payload["sr"] - 2 * 1440) <= 1
+    assert payload["tp"] == 71
+    assert payload["st"] == "allowed_warning"

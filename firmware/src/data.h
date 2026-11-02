@@ -9,6 +9,8 @@ struct UsageData {
     char status[16];         // "allowed", "limited", etc.
     bool chime;              // play the session-reset chime; false unless daemon opts in
     bool enterprise;         // true = Enterprise spending-limit account
+    bool weekly_only;        // true = plan without a 5h window (e.g. Ultra): session_* is
+                             // the 7-day limit, weekly_* is extra usage (overage)
     int time_pct;            // 0-100: fraction of billing period elapsed (Enterprise)
     int period_days;         // total billing period length in days (Enterprise)
     char reset_date[12];     // formatted reset date e.g. "Jul 1" (Enterprise)

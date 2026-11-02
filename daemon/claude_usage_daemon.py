@@ -432,6 +432,22 @@ async def poll_api(token: str) -> dict | None:
             "acct": "pro",
             "ok": True,
         }
+    elif resp.headers.get("anthropic-ratelimit-unified-7d-utilization"):
+        # Weekly-only plans (e.g. Ultra, since the November 2026 plan change):
+        # no 5h window, just the 7-day limit plus overage. The 7-day limit goes
+        # in the session slot; "tp" is how much of that week has elapsed, so
+        # the device can show pace the way it does for an Enterprise month.
+        reset_7d = hdr("anthropic-ratelimit-unified-7d-reset")
+        payload = {
+            "s": pct(hdr("anthropic-ratelimit-unified-7d-utilization")),
+            "sr": reset_minutes(reset_7d),
+            "w": 0,
+            "wr": 0,
+            "st": hdr("anthropic-ratelimit-unified-7d-status", "unknown"),
+            "acct": "wk",
+            "tp": _week_elapsed_pct(now, reset_7d),
+            "ok": True,
+        }
     else:
         reset_ts = hdr("anthropic-ratelimit-unified-overage-reset")
         payload = {
@@ -447,6 +463,15 @@ async def poll_api(token: str) -> dict | None:
     add_chime_field(payload)   # adds "c":1 iff the config opts in
     add_clock_fields(payload)   # adds "t" + "tf" iff the config opts in
     return payload
+
+
+def _week_elapsed_pct(now: float, reset_ts: str) -> int:
+    """Share (0-100) of the 7-day window that has passed, from its reset time."""
+    try:
+        remaining = float(reset_ts) - now
+    except ValueError:
+        return 0
+    return max(0, min(100, int(round(100 * (1 - remaining / (7 * 86400))))))
 
 
 def _billing_period_info(now: float, reset_ts: str) -> dict:

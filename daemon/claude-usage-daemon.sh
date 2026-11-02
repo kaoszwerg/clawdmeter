@@ -345,6 +345,23 @@ build_payload_for_token() {
                 wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
                 printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm;
             }')
+    elif echo "$headers" | grep -qi "anthropic-ratelimit-unified-7d-utilization"; then
+        # Weekly-only plan (e.g. Ultra) — no 5h window. The 7-day limit goes in
+        # the session slot; "tp" is the elapsed share of that week (pace).
+        local w7_util w7_reset w7_status
+        w7_util=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-utilization" | tr -d '\r' | awk '{print $2}')
+        w7_reset=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-reset" | tr -d '\r' | awk '{print $2}')
+        w7_status=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-status" | tr -d '\r' | awk '{print $2}')
+        w7_util=${w7_util:-0}; w7_reset=${w7_reset:-0}; w7_status=${w7_status:-unknown}
+        payload=$(awk -v u7="$w7_util" -v r7="$w7_reset" -v st="$w7_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" \
+            'BEGIN {
+                sp = u7 * 100; sp = sp > 100 ? 100 : sp; sp = sprintf("%.0f", sp);
+                rem = r7 - now;
+                sr = rem / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
+                tp = 100 * (1 - rem / (7 * 86400)); tp = tp < 0 ? 0 : (tp > 100 ? 100 : tp);
+                tp = sprintf("%.0f", tp);
+                printf "{\"s\":%s,\"sr\":%s,\"w\":0,\"wr\":0,\"st\":\"%s\",\"acct\":\"wk\",\"tp\":%s%s%s,\"ok\":true}", sp, sr, st, tp, clk, chm;
+            }')
     else
         # Enterprise account — spending-limit model
         overage_util=${overage_util:-0}; overage_reset=${overage_reset:-0}

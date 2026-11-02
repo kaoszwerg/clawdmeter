@@ -204,7 +204,7 @@ Everything the daemon knows. Also the answer of every `POST`.
 | `usage.session_pct` / `weekly_pct` | int | 0–100 (5-hour / 7-day window). On an enterprise plan `session_pct` is the overage utilization and `weekly_pct` is 0 |
 | `usage.session_reset_min` / `weekly_reset_min` | int | minutes until that window resets, at the time of `updated_at` |
 | `usage.status` | string | Anthropic's rate-limit status word, e.g. `allowed`, `allowed_warning`, `rejected` |
-| `usage.account` | `"pro"` \| `"ent"` | plan type |
+| `usage.account` | `"pro"` \| `"wk"` \| `"ent"` | plan type: `pro` = 5h + 7-day windows, `wk` = 7-day window only (e.g. Ultra; the 7-day limit sits in the session fields), `ent` = Enterprise spending limit |
 | `usage.updated_at` | int | Unix time of that reading |
 | `written_at` | int \| null | Unix time of the last successful write to the device |
 | `error` | string \| null | the last **write** failure; cleared by the next successful write. Nothing else sets it: a missing, unpaired or switched-off device is `null` here, not an error |
