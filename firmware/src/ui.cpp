@@ -548,7 +548,10 @@ static void add_ring_ticks(lv_obj_t* parent) {
         lv_obj_clear_flag(tick, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_flag(tick, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-        // The mark's value, small and just inside the inner ring.
+        // The mark's value, small and just inside the inner ring. The mark
+        // at the top of the ring (50 %) gets none: that spot is the title's,
+        // and a notch straight up reads as "half" without a number.
+        if (fabsf(cosf(rad)) < 0.2f) continue;
         lv_obj_t* lbl = lv_label_create(parent);
         lv_label_set_text_fmt(lbl, "%d", 25 * (i + 1));
         lv_obj_set_style_text_font(lbl, L.ring_label_font, 0);
