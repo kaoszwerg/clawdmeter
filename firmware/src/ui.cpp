@@ -563,9 +563,14 @@ static void add_ring_ticks(lv_obj_t* parent) {
 // on round ones. Rings keep the single fill colour make_ring() gave them
 // (the level is read off the scale marks and the number in the middle), so
 // `color` only applies to bars.
-static void set_gauge(lv_obj_t* gauge, int value, lv_color_t color) {
+// Weekly-only plans tint the rings too (level outside, elapsed inside); while
+// they do, ui_set_bar_color() must leave the rings alone.
+static bool rings_tinted = false;
+
+static void set_gauge(lv_obj_t* gauge, int value, lv_color_t color, bool tint_ring = false) {
     if (L.round) {
         lv_arc_set_value(gauge, value);
+        lv_obj_set_style_arc_color(gauge, tint_ring ? color : L.gauge_ok, LV_PART_INDICATOR);
     } else {
         lv_bar_set_value(gauge, value, LV_ANIM_ON);
         lv_obj_set_style_bg_color(gauge, color, LV_PART_INDICATOR);
@@ -938,13 +943,98 @@ void ui_init(void) {
     charge_anim_init(scr);
 }
 
+// ---- Weekly-only budget levels ----
+// Where the weekly limit lands at reset if use goes on at the current rate:
+// used / elapsed. Under 90 % fine, under 105 % on pace, under 125 % over,
+// beyond that critical. In the first 10 % of the week that ratio swings too
+// hard, so the lead in points (used - elapsed) decides instead. Near the
+// limit the level never reads calm, whatever the rate.
+static const uint32_t level_hex[4] = { LEVEL_HEX_UNDER, LEVEL_HEX_ON, LEVEL_HEX_OVER, LEVEL_HEX_CRIT };
+static const char* const level_text[4] = { "Under pace", "On pace", "Over pace", "Critical" };
+
+static int budget_level(float used, int elapsed) {
+    int lvl;
+    if (elapsed < 10) {
+        const float lead = used - (float)elapsed;
+        lvl = lead <= 0 ? 0 : lead <= 10 ? 1 : lead <= 20 ? 2 : 3;
+        if (used >= 95.0f) lvl = 3;
+        return lvl;
+    }
+    const float proj = used * 100.0f / (float)elapsed;
+    lvl = proj < 90.0f ? 0 : proj < 105.0f ? 1 : proj < 125.0f ? 2 : 3;
+    if (used >= 90.0f && lvl < 2) lvl = 2;
+    if (used >= 97.0f) lvl = 3;
+    return lvl;
+}
+
+// Budget mark: a white notch on the usage gauge at the elapsed share of the
+// week — fill past the notch means ahead of budget. A line across the outer
+// ring on round panels, a thin post inside the bar on the others. Created
+// on first use, hidden outside weekly-only mode.
+static lv_obj_t* budget_mark = nullptr;
+static lv_point_precise_t budget_mark_pts[2];
+
+static void set_budget_mark(int elapsed) {
+    if (elapsed < 0) {
+        if (budget_mark) lv_obj_add_flag(budget_mark, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (elapsed > 100) elapsed = 100;
+    if (L.round) {
+        if (!budget_mark) {
+            // On the top layer (panel_weekly), above both rings and the ticks.
+            budget_mark = lv_line_create(panel_weekly);
+            lv_obj_set_pos(budget_mark, 0, 0);
+            lv_obj_set_style_line_width(budget_mark, L.ring_tick_w > 0 ? L.ring_tick_w : 3, 0);
+            lv_obj_set_style_line_color(budget_mark, COL_TEXT, 0);
+            lv_obj_clear_flag(budget_mark, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_flag(budget_mark, LV_OBJ_FLAG_EVENT_BUBBLE);
+        }
+        const float c     = L.scr_w / 2.0f;
+        const float r_out = L.ring_d / 2.0f + 2;
+        const float r_in  = L.ring_d / 2.0f - L.ring_w - 2;
+        const int   sweep = (L.ring_end - L.ring_start + 360) % 360;
+        const float rad   = (L.ring_start + sweep * elapsed / 100.0f) * (float)M_PI / 180.0f;
+        budget_mark_pts[0].x = (lv_value_precise_t)lroundf(c + r_in  * cosf(rad));
+        budget_mark_pts[0].y = (lv_value_precise_t)lroundf(c + r_in  * sinf(rad));
+        budget_mark_pts[1].x = (lv_value_precise_t)lroundf(c + r_out * cosf(rad));
+        budget_mark_pts[1].y = (lv_value_precise_t)lroundf(c + r_out * sinf(rad));
+        lv_line_set_points(budget_mark, budget_mark_pts, 2);
+    } else {
+        if (!budget_mark) {
+            budget_mark = lv_obj_create(bar_session);
+            lv_obj_remove_style_all(budget_mark);
+            lv_obj_add_flag(budget_mark, LV_OBJ_FLAG_IGNORE_LAYOUT);
+            lv_obj_set_style_bg_color(budget_mark, COL_TEXT, 0);
+            lv_obj_set_style_bg_opa(budget_mark, LV_OPA_COVER, 0);
+            lv_obj_clear_flag(budget_mark, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_flag(budget_mark, LV_OBJ_FLAG_EVENT_BUBBLE);
+        }
+        lv_obj_update_layout(bar_session);
+        const int32_t w = lv_obj_get_width(bar_session);
+        const int32_t h = lv_obj_get_height(bar_session);
+        int32_t x = w * elapsed / 100 - 1;
+        if (x < 0) x = 0;
+        if (x > w - 3) x = w - 3;
+        lv_obj_set_size(budget_mark, 3, h);
+        lv_obj_set_pos(budget_mark, x, 0);
+    }
+    lv_obj_clear_flag(budget_mark, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void format_span(int mins, char* buf, size_t len) {
+    if (mins < 60)        snprintf(buf, len, "%dm", mins < 1 ? 1 : mins);
+    else if (mins < 1440) snprintf(buf, len, "%dh %dm", mins / 60, mins % 60);
+    else                  snprintf(buf, len, "%dd %dh", mins / 1440, (mins % 1440) / 60);
+}
+
 void ui_set_bar_color(uint32_t rgb) {
     lv_color_t c = lv_color_hex(rgb);
     if (lv_color_eq(c, L.gauge_ok)) return;
     L.gauge_ok = c;
     // Rings are coloured once at creation and never by level, so repaint
     // them here; bars pick the new colour up on the next ui_update().
-    if (L.round) {
+    if (L.round && !rings_tinted) {
         if (bar_session) lv_obj_set_style_arc_color(bar_session, c, LV_PART_INDICATOR);
         if (bar_weekly)  lv_obj_set_style_arc_color(bar_weekly, c, LV_PART_INDICATOR);
     }
@@ -1005,7 +1095,16 @@ void ui_update(const UsageData* data) {
         lv_label_set_text(lbl_session_reset, buf);
     }
 
-    set_gauge(bar_session, s_pct, pct_color(data->session_pct));
+    rings_tinted = data->weekly_only && !data->enterprise;
+    if (rings_tinted) {
+        const int lvl = budget_level(data->session_pct, data->time_pct);
+        set_gauge(bar_session, s_pct, lv_color_hex(level_hex[lvl]), true);
+        set_budget_mark(data->time_pct);
+    } else {
+        set_gauge(bar_session, s_pct, pct_color(data->session_pct));
+        set_budget_mark(-1);
+    }
+    lv_obj_set_style_text_color(lbl_weekly_pct, rings_tinted ? THEME_ELAPSED : COL_TEXT, 0);
 
     if (data->enterprise) {
         // Period box: time % + dynamic pace color + "Resets <date>" label
@@ -1019,13 +1118,25 @@ void ui_update(const UsageData* data) {
                  pace_hex, pace_text, data->reset_date);
         lv_label_set_text(lbl_weekly_reset, buf);
     } else if (data->weekly_only) {
-        // Elapsed box: how far into the 7-day window we are, coloured by pace.
+        // Elapsed box: how far into the 7-day window we are, in a fixed cool
+        // colour; the budget level lives on the weekly gauge above and in the
+        // pace line, which also says when the limit runs out at this rate.
         lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", data->time_pct);
-        lv_color_t bar_pace = (data->session_pct <= (float)data->time_pct) ? L.gauge_ok :
-                              (data->session_pct <= (float)data->time_pct + 15.0f) ? COL_AMBER :
-                              COL_RED;
-        set_gauge(bar_weekly, data->time_pct, bar_pace);
-        snprintf(buf, sizeof(buf), "#%s %s#", pace_hex, pace_text);
+        set_gauge(bar_weekly, data->time_pct, THEME_ELAPSED, true);
+        const int lvl = budget_level(data->session_pct, data->time_pct);
+        int run_out = -1;   // minutes until 100 % at the current rate
+        if (lvl >= 1 && data->time_pct >= 10 && data->session_pct > 0.0f) {
+            const float left_pct = (100.0f - data->session_pct) * (float)data->time_pct / data->session_pct;
+            if (left_pct < 100.0f - (float)data->time_pct) run_out = (int)(left_pct * 7 * 1440 / 100.0f);
+        }
+        if (run_out >= 0) {
+            char span[16];
+            format_span(run_out, span, sizeof(span));
+            snprintf(buf, sizeof(buf), "#%06lx %s - out in %s#",
+                     (unsigned long)level_hex[lvl], level_text[lvl], span);
+        } else {
+            snprintf(buf, sizeof(buf), "#%06lx %s#", (unsigned long)level_hex[lvl], level_text[lvl]);
+        }
         lv_label_set_text(lbl_weekly_reset, buf);
     } else {
         int w_pct = (int)(data->weekly_pct + 0.5f);
