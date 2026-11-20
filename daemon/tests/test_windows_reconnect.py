@@ -725,3 +725,124 @@ def test_auth_error_sets_token_expired():
         _run(connect_and_run(device, stop_event, tray_state))
 
     tray_state.set_error.assert_called_once_with("token expired — run claude login")
+
+
+# ---------------------------------------------------------------------------
+# Poll backoff and stale resends (2026-11-19 field report: an expired token
+# drew one 401 every 5 s for hours, while animation changes kept resending the
+# last reading as if current and flipped the tray back to "connected").
+# ---------------------------------------------------------------------------
+
+class _FakeSession:
+    """Stand-in for Session: records every payload written to the device."""
+    written: list = []
+
+    def __init__(self, _client):
+        self.refresh_requested = asyncio.Event()
+        _FakeSession.written = []
+
+    async def setup_refresh_subscription(self):
+        pass
+
+    async def setup_battery(self):
+        pass
+
+    async def write_payload(self, payload):
+        _FakeSession.written.append(dict(payload))
+        return True
+
+
+def _drive_loop(poll, ticks, *, mtime=lambda tick: 1.0, anim=lambda tick: "", tray=None):
+    """Run connect_and_run for `ticks` TICK waits on a fake clock. Returns the
+    number of poll_api calls. `mtime(tick)` / `anim(tick)` script the
+    credentials file's mtime and the host-API animation per tick."""
+    import daemon.claude_usage_daemon_windows as mod
+
+    device = _make_device()
+    stop_event = asyncio.run(_make_event(False))
+    clock = [1_000_000.0]
+    tick = [0]
+    calls = [0]
+
+    async def fake_wait(*_events, timeout):
+        clock[0] += timeout
+        tick[0] += 1
+        if tick[0] >= ticks:
+            stop_event.set()
+
+    async def counting_poll(token):
+        calls[0] += 1
+        return await poll(token)
+
+    state = MagicMock()
+    state.wanted_anim.side_effect = lambda: anim(tick[0])
+    state.take_wake.return_value = False
+
+    with patch.object(mod, "BleakClient", return_value=_connected_mock_client()), \
+         patch.object(mod, "Session", _FakeSession), \
+         patch.object(mod, "read_token", return_value="tok"), \
+         patch.object(mod, "poll_api", new=counting_poll), \
+         patch.object(mod, "_wait_first", new=fake_wait), \
+         patch.object(mod, "_credentials_mtime", side_effect=lambda: mtime(tick[0])), \
+         patch.object(mod, "add_clock_fields", lambda p: None), \
+         patch.object(mod.host_api, "STATE", state), \
+         patch.object(mod.time, "time", side_effect=lambda: clock[0]):
+        _run(connect_and_run(device, stop_event, tray))
+    return calls[0]
+
+
+def test_auth_error_waits_full_interval_not_every_tick():
+    """After a 401 the loop must not ask again on the next TICK: over 50 s
+    (10 ticks) with an unchanged credentials file there is exactly one call."""
+    async def poll(_t):
+        raise AuthError(401)
+
+    assert _drive_loop(poll, ticks=10) == 1
+
+
+def test_auth_error_retries_at_once_when_credentials_change():
+    """Claude Code writing a fresh token (credentials mtime changes) triggers
+    the next poll immediately instead of waiting out the interval."""
+    async def poll(_t):
+        raise AuthError(401)
+
+    assert _drive_loop(poll, ticks=4, mtime=lambda t: 1.0 if t < 2 else 2.0) == 2
+
+
+def test_transient_failure_retries_after_short_delay():
+    """A DNS blip / 5xx retries after RETRY_AFTER_FAILURE, not every tick and
+    not a full POLL_INTERVAL later."""
+    import daemon.claude_usage_daemon_windows as mod
+
+    async def poll(_t):
+        return None
+
+    ticks = 10  # 50 s
+    expected = 1 + (ticks * mod.TICK) // mod.RETRY_AFTER_FAILURE
+    assert _drive_loop(poll, ticks=ticks) == expected
+
+
+def test_stale_resend_is_marked_and_keeps_tray_error():
+    """An animation change resent long after the last good reading goes out
+    with ok=false and leaves the tray in its error state."""
+    import daemon.claude_usage_daemon_windows as mod
+
+    good = {"s": 23, "sr": 100, "w": 0, "wr": 0, "st": "allowed", "ok": True}
+    first = [True]
+
+    async def poll(_t):
+        if first[0]:
+            first[0] = False
+            return dict(good)
+        raise AuthError(401)
+
+    stale_tick = mod.STALE_AFTER // mod.TICK + 2
+    tray = MagicMock()
+    _drive_loop(poll, ticks=stale_tick + 1, tray=tray,
+                anim=lambda t: "work think" if t >= stale_tick else "work coding")
+
+    written = _FakeSession.written
+    assert written[0]["ok"] is True
+    assert written[-1]["a"] == "work think"
+    assert written[-1]["ok"] is False
+    assert tray.set_connected.call_count == 1   # only for the fresh reading

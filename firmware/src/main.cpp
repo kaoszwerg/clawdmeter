@@ -139,7 +139,7 @@ static bool parse_json(const char* json, UsageData* out) {
         out->bar_color = strtol(bc, nullptr, 16);
     }
     out->wake = doc["wk"].as<bool>();
-    out->ok = doc["ok"] | false;
+    out->ok = doc["ok"] | true;   // absent = live; only an explicit false marks a stale resend
     out->valid = true;
     return true;
 }

@@ -41,6 +41,15 @@ BATTERY_CHAR_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 
 POLL_INTERVAL = 60
 TICK = 5
+# A failed poll used to leave last_poll untouched, so every TICK retried: an
+# expired token cost one 401 every 5 s, for hours. A transient failure (DNS,
+# 5xx) now retries after this many seconds; a 401/403 waits the full
+# POLL_INTERVAL, or less if the credentials file changes (Claude Code wrote a
+# fresh token).
+RETRY_AFTER_FAILURE = 15
+# A resent reading older than this goes out with "ok": false, so the device
+# shows its "No data" screen instead of old numbers under a fresh clock.
+STALE_AFTER = 2 * POLL_INTERVAL + 30
 CONNECT_RETRIES = 3        # D-01: attempts before giving up on a device
 CONNECT_RETRY_DELAY = 2.0  # D-01: seconds between failed connect attempts
 ZOMBIE_BREAK_LIMIT = 1     # D-03: consecutive write failures before abandoning a half-open link
@@ -678,6 +687,17 @@ def read_token() -> str | None:
     return None
 
 
+def _credentials_mtime() -> float | None:
+    """mtime of the first credential file that exists, or None. Lets the poll
+    loop retry at once when Claude Code writes a refreshed token."""
+    for path in _windows_credential_candidates():
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            continue
+    return None
+
+
 def _read_expiry() -> str:
     """Return human-readable expiry from the first-hit credentials file.
 
@@ -794,6 +814,8 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     # The last usage payload, kept so a host-API animation change can go out
     # at once — re-sent with the new "a" instead of spending an API request.
     last_payload: dict | None = None
+    last_fresh = 0.0  # time.time() of the last successful API reading
+    auth_failed_mtime: float | None = None  # creds mtime at the last 401/403
     sent_anim: str | None = None
     api_changed = asyncio.Event()
     host_api.STATE.attach(asyncio.get_running_loop(), api_changed)
@@ -802,27 +824,41 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
             now = time.time()
             elapsed = now - last_poll
             payload = None
-            if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
+            creds_changed = (
+                auth_failed_mtime is not None and _credentials_mtime() != auth_failed_mtime
+            )
+            if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL or creds_changed:
                 session.refresh_requested.clear()
+                # Counted from the attempt, not from a successful write: a failed
+                # poll must not make the very next tick try again.
+                last_poll = now
+                auth_failed_mtime = None
                 token = read_token()  # D-09: fresh each cycle
                 if not token:
                     log("No token; skipping poll")
                     if tray_state:
                         tray_state.set_error("token expired — run claude login")
+                    auth_failed_mtime = _credentials_mtime() or 0.0
                 else:
                     try:
                         payload = await poll_api(token)
                     except AuthError:
-                        # Real 401/403 — token genuinely needs a refresh.
+                        # Real 401/403 — token genuinely needs a refresh. Wait
+                        # for a new token instead of asking again every tick.
                         if tray_state:
                             tray_state.set_error("token expired — run claude login")
+                        auth_failed_mtime = _credentials_mtime() or 0.0
                         payload = None
-                    # payload None from a TRANSIENT failure (network/DNS, timeout,
-                    # rate-limit, 5xx): poll_api already logged it; do NOT toast
-                    # "token expired" — that mislabeled a boot-time DNS blip as an
-                    # auth problem (SC#5). The next tick retries.
+                    else:
+                        if payload is None:
+                            # TRANSIENT failure (network/DNS, timeout, 5xx):
+                            # poll_api already logged it; do NOT toast "token
+                            # expired" — that mislabeled a boot-time DNS blip
+                            # as an auth problem (SC#5). Retry soon.
+                            last_poll = now - POLL_INTERVAL + RETRY_AFTER_FAILURE
                 if payload is not None:
                     last_payload = payload
+                    last_fresh = time.time()
                     host_api.STATE.set_usage(payload)
             # Cleared BEFORE reading the claim: a change that lands after this
             # line sets the event again and the wait below returns at once.
@@ -833,6 +869,10 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                 # resend the last reading with a fresh clock.
                 payload = dict(last_payload)
                 add_clock_fields(payload)
+                if time.time() - last_fresh > STALE_AFTER:
+                    # Old numbers: the device shows "No data" rather than
+                    # passing them off as current. Still carries the animation.
+                    payload["ok"] = False
             if payload is not None:
                 payload["a"] = wanted
                 # A claim that must be seen (busy / call) lights a dark panel.
@@ -843,11 +883,12 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                 if await session.write_payload(out):
                     sent_anim = wanted
                     host_api.STATE.set_written(wanted)
-                    if payload is last_payload:
-                        last_poll = time.time()
                     used_successfully = True
                     consecutive_failures = 0  # D-03: reset on success
-                    if tray_state:
+                    # Only a fresh reading clears the tray: a stale resend for
+                    # an animation change used to flip "token expired" back to
+                    # "connected" while the API was still refusing the token.
+                    if tray_state and payload.get("ok", True):
                         tray_state.set_connected(time.time())
                 else:
                     if wake:

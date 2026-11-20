@@ -1045,12 +1045,19 @@ void ui_set_bar_color(uint32_t rgb) {
 
 void ui_update(const UsageData* data) {
     if (!data->valid) return;
-    last_data_ms = lv_tick_get();   // a valid usage update just landed → dot goes green
-    data_received = true;
+    uint32_t now_ms = lv_tick_get();
+    // "ok": false = the daemon is resending an old reading (its API calls are
+    // failing, e.g. an expired token) only to carry an animation change. It
+    // must not count as live data, or the old numbers would sit under a fresh
+    // clock as if current; let the idle "No data" screen take over instead.
+    if (data->ok) {
+        last_data_ms = now_ms;      // a valid usage update just landed → dot goes green
+        data_received = true;
+    }
 
     if (data->clock_epoch > 0) {    // daemon supplied wall-clock time → drive the title clock
         clock_base_epoch = data->clock_epoch;
-        clock_base_ms = last_data_ms;
+        clock_base_ms = now_ms;
         clock_fmt = data->clock_fmt;
     } else if (clock_base_epoch != 0) {   // clock turned off daemon-side → revert title to "Usage"
         clock_base_epoch = 0;
