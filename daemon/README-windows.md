@@ -231,6 +231,25 @@ launched.
 
 ---
 
+## Running the tests
+
+Run the suite with the **venv's** interpreter, the same `.venv` the daemon uses:
+
+```powershell
+.venv\Scripts\python.exe -m pip install pytest
+.venv\Scripts\python.exe -m pytest daemon\tests
+```
+
+The base interpreter (`C:\Python3xx\python.exe`) is not enough even though the
+tray app runs on it: `tray_windows.py` adds `.venv\Lib\site-packages` to its own
+path at start-up, but pytest does not. Run with the base interpreter and every
+test that imports the daemon fails at collection with
+`ModuleNotFoundError: No module named 'bleak'`; only `test_host_api.py` loads.
+Two tests in `test_windows_token.py` are skipped on native Windows on purpose:
+they check a warning that only Linux/WSL prints.
+
+---
+
 ## What is NOT covered here
 
 - PyInstaller / one-file `.exe` packaging — v2

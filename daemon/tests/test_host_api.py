@@ -434,3 +434,49 @@ def test_busy_and_call_wake_once_other_signals_do_not():
     assert s.take_wake() is True
     s.claim({"anim": "allow"})              # raw anim never wakes
     assert s.take_wake() is False
+
+
+# ---------------------------------------------------------------------------
+# Clock and Content-Length at the edge
+# ---------------------------------------------------------------------------
+
+def test_nonces_run_on_a_monotonic_clock():
+    # A wall-clock step (NTP, a manual change) must not expire or revive nonces.
+    import inspect
+    import time
+    assert inspect.signature(host_api.Nonces).parameters["clock"].default is time.monotonic
+
+
+def _raw_call(srv, head: bytes, timeout=3):
+    """Send a hand-written request; urllib would fix a bad Content-Length itself."""
+    import socket
+    with socket.create_connection(("127.0.0.1", srv.port), timeout=timeout) as s:
+        s.sendall(head)
+        data = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    status = int(data.split(b" ", 2)[1])
+    return status, json.loads(data.split(b"\r\n\r\n", 1)[1])
+
+
+@pytest.mark.parametrize("path", ["/api/status", "/api/prove"])
+@pytest.mark.parametrize("length", ["-1", "abc", "1e3", ""])
+def test_a_bad_content_length_is_a_400_not_a_hang(server, path, length):
+    srv, _ = server
+    status, body = _raw_call(srv, (
+        f"POST {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {'k' * 40}\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {length}\r\n"
+        "Connection: close\r\n\r\n").encode())
+    assert status == 400
+    assert body == {"error": "bad Content-Length"}
+
+
+def test_a_body_over_4_kib_is_still_a_413(server):
+    srv, _ = server
+    status, _ = _raw_call(srv, (
+        f"POST /api/prove HTTP/1.1\r\nHost: x\r\nContent-Length: 4097\r\n"
+        "Connection: close\r\n\r\n").encode())
+    assert status == 413

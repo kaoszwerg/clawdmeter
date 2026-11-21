@@ -363,10 +363,17 @@ def response_mac(key: str, nonce: str, status: int, body: bytes) -> str:
     return hmac.new(key.encode(), text, hashlib.sha256).hexdigest()
 
 
-class Nonces:
-    """Nonces this daemon has handed out: each good once, for NONCE_SECONDS."""
+_DIGITS = re.compile(r"[0-9]+")
 
-    def __init__(self, clock=time.time) -> None:
+
+class Nonces:
+    """Nonces this daemon has handed out: each good once, for NONCE_SECONDS.
+
+    The clock is monotonic: a wall-clock step (NTP, a manual change) must not
+    expire a nonce early or keep one alive past its 30 s.
+    """
+
+    def __init__(self, clock=time.monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
         self._issued: dict[str, float] = {}   # nonce -> expiry; insertion order = age
@@ -437,7 +444,16 @@ def _handler_for(state: HostState, key: str, log, nonces: Nonces):
         def _raw(self) -> bytes:
             """The request body as sent, read once: a signature covers these bytes."""
             if not hasattr(self, "_raw_body"):
-                length = int(self.headers.get("Content-Length") or 0)
+                # Digits only: int() would take "-1" (rfile.read(-1) then
+                # waits for the client to close) and "abc" would raise past
+                # the error handling, leaving the call without an answer.
+                given = self.headers.get("Content-Length")
+                if given is None:
+                    length = 0
+                elif _DIGITS.fullmatch(given.strip()):
+                    length = int(given)
+                else:
+                    raise ApiError(400, "bad Content-Length")
                 if length > 4096:
                     raise ApiError(413, "body too large")
                 self._raw_body = self.rfile.read(length) if length else b""

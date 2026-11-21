@@ -153,7 +153,7 @@ it sent), and may put the daemon's text in a detail line or the log.
 
 | Code | When |
 |---|---|
-| 400 | body is not a JSON object, neither or both of `status`/`anim`, unknown `status` or `anim` |
+| 400 | body is not a JSON object, neither or both of `status`/`anim`, unknown `status` or `anim`; a `Content-Length` that is not a plain decimal number |
 | 401 | missing or wrong key; a malformed, unknown, used or expired signature nonce; a wrong MAC |
 | 404 | unknown path |
 | 405 | known path, wrong method (e.g. `GET /api/keepalive`) |
@@ -249,6 +249,11 @@ A nonce for one signed request (§3).
 Good once, for `ttl_s` seconds. The daemon keeps the newest 64 outstanding;
 older ones are dropped. Take a new one for every call, and never retry a
 refused call with the same nonce.
+
+Any local program can call this endpoint, so a flood of challenges can push a
+client's nonce out before it is used. That is accepted on purpose: it costs at
+most a refused call (401, take a new nonce and retry once), and leaks nothing,
+since a nonce is worthless without the key.
 
 ### `GET /api/status`
 
