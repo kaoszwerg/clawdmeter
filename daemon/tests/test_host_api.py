@@ -198,17 +198,12 @@ def server():
 
 
 def _call(srv, method, path, body=None, key="k" * 40):
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{srv.port}{path}", method=method,
-        data=None if body is None else json.dumps(body).encode(),
-        headers={"Content-Type": "application/json",
-                 **({"Authorization": f"Bearer {key}"} if key else {})},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read())
+    """One call, signed with `key` (no Authorization at all when `key` is None)."""
+    if key is None:
+        code, _, raw = _raw(srv, method, path, body)
+    else:
+        code, _, raw, _ = _signed(srv, method, path, body, key=key)
+    return code, json.loads(raw)
 
 
 def test_info_needs_no_key(server):
@@ -243,43 +238,14 @@ def test_errors_are_json(server):
 
 
 # ---------------------------------------------------------------------------
-# Proving the key without sending it
+# The proof is gone: with no bearer key there is nothing left to prove
 # ---------------------------------------------------------------------------
 
-def test_prove_matches_the_shared_vector():
-    # The same vector is pinned in yggshell
-    # (src-tauri/src/signal/clawdmeter.rs::the_proof_is_the_one_the_daemon_makes).
-    # A change on one side only leaves the client unable to trust this daemon.
-    assert host_api.prove("k3y-shared-vector", "00112233445566778899aabbccddeeff") == (
-        "ff4aef6e89d9b8f34e89cedb7c978ee103e9277067e3a2317c7e8f60b3b1f02a"
-    )
-
-
-def test_prove_needs_no_key_and_answers_for_the_nonce(server):
+def test_the_proof_endpoint_is_gone(server):
     srv, _ = server
-    nonce = "ab" * 32
-    code, body = _call(srv, "POST", "/api/prove", {"nonce": nonce}, key=None)
-    assert code == 200
-    assert body == {"proof": host_api.prove("k" * 40, nonce)}
-
-
-def test_info_says_the_proof_is_offered(server):
-    srv, _ = server
-    assert _call(srv, "GET", "/api/info", key=None)[1]["prove"] is True
-
-
-@pytest.mark.parametrize("body", [
-    {}, {"nonce": ""}, {"nonce": "ab" * 15}, {"nonce": "ab" * 65},
-    {"nonce": "zz" * 32}, {"nonce": 42},
-])
-def test_a_nonce_that_is_not_long_hex_is_refused(server, body):
-    srv, _ = server
-    assert _call(srv, "POST", "/api/prove", body, key=None)[0] == 400
-
-
-def test_prove_is_post_only(server):
-    srv, _ = server
-    assert _call(srv, "GET", "/api/prove", key=None)[0] == 405
+    assert _call(srv, "POST", "/api/prove", {"nonce": "ab" * 32}, key=None)[0] == 404
+    assert "prove" not in _call(srv, "GET", "/api/info", key=None)[1]
+    assert not hasattr(host_api, "prove")
 
 
 # ---------------------------------------------------------------------------
@@ -412,9 +378,16 @@ def test_a_malformed_signature_is_refused(server, header):
     assert _raw(srv, "POST", "/api/keepalive", headers={"Authorization": header})[0] == 401
 
 
-def test_the_bearer_key_is_still_accepted_for_older_clients(server):
-    srv, _ = server
-    assert _call(srv, "POST", "/api/keepalive")[0] == 200
+def test_the_bearer_key_is_refused_even_when_it_is_right(server):
+    # Every client signs since yggshell 0.260.17; the key itself no longer opens anything,
+    # so a program that learned it on the port can do nothing with it here either.
+    srv, state = server
+    for method, path, body in [("POST", "/api/keepalive", None),
+                               ("POST", "/api/status", {"status": "busy"}),
+                               ("GET", "/api/status", None)]:
+        code, headers, _ = _raw(srv, method, path, body, {"Authorization": f"Bearer {'k' * 40}"})
+        assert code == 401 and "X-Clawdmeter-MAC" not in headers
+    assert state.wanted_anim() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -462,21 +435,62 @@ def _raw_call(srv, head: bytes, timeout=3):
     return status, json.loads(data.split(b"\r\n\r\n", 1)[1])
 
 
-@pytest.mark.parametrize("path", ["/api/status", "/api/prove"])
+def _signed_head(srv, length: str) -> bytes:
+    """A signed POST /api/status whose Content-Length is `length`.
+
+    The body is read to check the signature, so a fresh nonce and a well-formed
+    MAC are enough to reach the Content-Length check.
+    """
+    code, _, raw = _raw(srv, "POST", "/api/challenge")
+    assert code == 200
+    nonce = json.loads(raw)["nonce"]
+    return (f"POST /api/status HTTP/1.1\r\nHost: x\r\n"
+            f"Authorization: Clawdmeter-HMAC-SHA256 nonce={nonce}, mac={'ab' * 32}\r\n"
+            f"Content-Type: application/json\r\nContent-Length: {length}\r\n"
+            "Connection: close\r\n\r\n").encode()
+
+
 @pytest.mark.parametrize("length", ["-1", "abc", "1e3", ""])
-def test_a_bad_content_length_is_a_400_not_a_hang(server, path, length):
+def test_a_bad_content_length_is_a_400_not_a_hang(server, length):
     srv, _ = server
-    status, body = _raw_call(srv, (
-        f"POST {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {'k' * 40}\r\n"
-        f"Content-Type: application/json\r\nContent-Length: {length}\r\n"
-        "Connection: close\r\n\r\n").encode())
+    status, body = _raw_call(srv, _signed_head(srv, length))
     assert status == 400
     assert body == {"error": "bad Content-Length"}
 
 
+@pytest.mark.parametrize("path, auth, code", [
+    ("/api/prove", "", 404),
+    ("/api/info", "", 405),
+    ("/api/status", f"Authorization: Bearer {'k' * 40}\r\n", 401),
+])
+def test_an_error_is_answered_only_after_the_body_is_read(server, path, auth, code):
+    # Measured on hugin 2026-11-21: an answer sent while the request body was
+    # still unread made Windows abort the connection (WinError 10053), and the
+    # client got no answer at all — now and then, in the full suite. So the
+    # daemon reads the announced body (it is at most 4 KiB) before any error
+    # answer. Shown deterministically: half a body gets no answer yet, the
+    # rest gets the error.
+    import socket
+    srv, _ = server
+    with socket.create_connection(("127.0.0.1", srv.port), timeout=3) as s:
+        s.sendall((f"POST {path} HTTP/1.1\r\nHost: x\r\n{auth}"
+                   "Content-Type: application/json\r\nContent-Length: 20\r\n"
+                   "Connection: close\r\n\r\n0123456789").encode())
+        s.settimeout(0.4)
+        with pytest.raises(socket.timeout):
+            s.recv(1)
+        s.settimeout(3)
+        s.sendall(b"0123456789")
+        data = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    assert int(data.split(b" ", 2)[1]) == code
+
+
 def test_a_body_over_4_kib_is_still_a_413(server):
     srv, _ = server
-    status, _ = _raw_call(srv, (
-        f"POST /api/prove HTTP/1.1\r\nHost: x\r\nContent-Length: 4097\r\n"
-        "Connection: close\r\n\r\n").encode())
+    status, _ = _raw_call(srv, _signed_head(srv, "4097"))
     assert status == 413

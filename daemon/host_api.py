@@ -280,47 +280,18 @@ def info() -> dict:
         "signals": {k: v for k, v in SIGNALS.items()},
         "wake_signals": list(WAKE_SIGNALS),
         "animations": list(ANIMATIONS),
-        "prove": True,
         "sign": True,
     }
 
 
 # ---------------------------------------------------------------------------
-# Proving the key without sending it
-# ---------------------------------------------------------------------------
-
-# The text the proof is made over, before the nonce. yggshell's
-# signal::clawdmeter::PROVE_LABEL must be the same bytes; both sides pin one
-# shared vector (test_prove_matches_the_shared_vector).
-PROVE_LABEL = b"clawdmeter host-api prove v1\n"
-
-# 32 to 128 hex characters: at least 16 random bytes, and nothing that is not
-# a nonce can be smuggled through it.
-_NONCE = re.compile(r"[0-9a-fA-F]{32,128}")
-
-
-def prove(key: str, nonce: str) -> str:
-    """What a holder of `key` answers to `nonce`: HMAC-SHA256, lowercase hex.
-
-    A client sends a fresh random nonce before it sends the bearer key, and
-    sends the key only if the answer is right. Something else listening on the
-    port — another account's program while this daemon is down, which is the
-    case yggshell's security audit (N4) is about — cannot make it without the
-    key, so it never receives the key. The key itself never travels for this.
-    """
-    return hmac.new(key.encode(), PROVE_LABEL + nonce.encode(), hashlib.sha256).hexdigest()
-
-
-def prove_answer(key: str, body: dict) -> dict:
-    nonce = body.get("nonce")
-    if not isinstance(nonce, str) or not _NONCE.fullmatch(nonce):
-        raise ApiError(400, '"nonce" must be 32 to 128 hex characters')
-    return {"proof": prove(key, nonce)}
-
-
-# ---------------------------------------------------------------------------
 # Signed calls: the key never travels
 # ---------------------------------------------------------------------------
+#
+# The only way in. The bearer key and the proof that used to guard it
+# (POST /api/prove) are gone since every client signs (yggshell 0.260.17;
+# yggshell ADR-PROJ-011, amendments of 2026-11-21): a program that learned the
+# key on this port, while the daemon was down, can do nothing with it here.
 
 # The texts each signature is made over, before the request's own parts.
 # yggshell's signal::clawdmeter holds the same bytes; one request vector and
@@ -343,9 +314,9 @@ def request_mac(key: str, method: str, path: str, nonce: str, body: bytes) -> st
     """The signature a client puts on one request, lowercase hex.
 
     HMAC-SHA256 over the label, the method, the path, the daemon's nonce and the
-    SHA-256 of the body, each on its own line. The key is the bearer key, which
-    then never crosses the wire: something else on the port learns a signature
-    over a nonce this daemon will never accept again.
+    SHA-256 of the body, each on its own line. The key never crosses the wire:
+    something else on the port learns a signature over a nonce this daemon will
+    never accept again.
     """
     text = (REQUEST_LABEL + f"{method}\n{path}\n{nonce}\n".encode()
             + hashlib.sha256(body).hexdigest().encode())
@@ -402,7 +373,7 @@ def challenge(nonces: Nonces) -> dict:
 # ---------------------------------------------------------------------------
 
 def load_or_create_key(path: Path) -> str:
-    """The bearer key clients present. Created once, kept in the user's profile.
+    """The key clients sign with. Created once, kept in the user's profile.
 
     Only processes of this Windows user can read the file, which is the same
     boundary the Claude token itself sits behind.
@@ -427,6 +398,9 @@ def _handler_for(state: HostState, key: str, log, nonces: Nonces):
     class Handler(BaseHTTPRequestHandler):
         server_version = "Clawdmeter"
         sys_version = ""
+        # Every read on the socket gives up after this, so a client that
+        # announces a body and never sends it cannot hold a thread for ever.
+        timeout = 5
 
         def log_message(self, fmt, *args):   # stay out of stderr (pythonw)
             pass
@@ -459,33 +433,30 @@ def _handler_for(state: HostState, key: str, log, nonces: Nonces):
                 self._raw_body = self.rfile.read(length) if length else b""
             return self._raw_body
 
-        def _authorize(self, method: str, path: str) -> str | None:
-            """Who may call: the nonce of a valid signature, or None for the bearer key.
+        def _authorize(self, method: str, path: str) -> str:
+            """Who may call: the nonce of a valid signature, and nobody else.
 
             A signed request whose nonce was issued, is fresh and is used here
             for the first time, with a MAC over exactly this method, path and
             body, is served and its answer signed over the same nonce. The nonce
             is spent before the MAC is checked, so a wrong guess burns it.
-            Anything else signed is refused unsigned: an answer signed over a
-            nonce this daemon did not accept would be a signing oracle.
+            Anything else is refused unsigned — a bearer key too, however right:
+            an answer signed over a nonce this daemon did not accept would be a
+            signing oracle.
             """
             got = self.headers.get("Authorization", "")
-            if got.startswith("Clawdmeter-HMAC-SHA256"):
-                m = _SIGNED.fullmatch(got)
-                if not m:
-                    raise ApiError(401, "malformed signature")
-                nonce, mac = m.groups()
-                if not nonces.take(nonce):
-                    raise ApiError(401, "unknown or used nonce")
-                want = request_mac(key, method, path, nonce, self._raw())
-                if not hmac.compare_digest(mac.encode(), want.encode()):
-                    raise ApiError(401, "bad signature")
-                return nonce
-            # Older clients still send the key itself; accepted until every
-            # client signs (yggshell ADR-PROJ-011, amendment of 2026-11-21).
-            if hmac.compare_digest(got.encode(), f"Bearer {key}".encode()):
-                return None
-            raise ApiError(401, "missing or wrong bearer key")
+            if not got.startswith("Clawdmeter-HMAC-SHA256"):
+                raise ApiError(401, "a signed request is required (see GET /api/info: sign)")
+            m = _SIGNED.fullmatch(got)
+            if not m:
+                raise ApiError(401, "malformed signature")
+            nonce, mac = m.groups()
+            if not nonces.take(nonce):
+                raise ApiError(401, "unknown or used nonce")
+            want = request_mac(key, method, path, nonce, self._raw())
+            if not hmac.compare_digest(mac.encode(), want.encode()):
+                raise ApiError(401, "bad signature")
+            return nonce
 
         def _body(self) -> dict:
             raw = self._raw()
@@ -505,10 +476,6 @@ def _handler_for(state: HostState, key: str, log, nonces: Nonces):
             try:
                 if method == "GET" and path == "/api/info":
                     return self._send(200, info())
-                # No key: the whole point is to prove the daemon holds it
-                # before a client sends it (see prove()).
-                if method == "POST" and path == "/api/prove":
-                    return self._send(200, prove_answer(key, self._body()))
                 # No key: a nonce is worth nothing without the key to sign with.
                 if method == "POST" and path == "/api/challenge":
                     return self._send(200, challenge(nonces))
@@ -519,7 +486,7 @@ def _handler_for(state: HostState, key: str, log, nonces: Nonces):
                     ("POST", "/api/release"): lambda: state.release(),
                 }
                 if (method, path) not in routes:
-                    known = {p for _, p in routes} | {"/api/info", "/api/prove", "/api/challenge"}
+                    known = {p for _, p in routes} | {"/api/info", "/api/challenge"}
                     if path in known:
                         raise ApiError(405, f"{method} not allowed on {path}")
                     raise ApiError(404, f"no such endpoint {path}")
@@ -529,7 +496,22 @@ def _handler_for(state: HostState, key: str, log, nonces: Nonces):
                     log(f"Host API: claim -> {result['anim'] or '(device)'}")
                 self._send(200, result, signed_for)
             except ApiError as e:
+                self._drain()
                 self._send(e.status, {"error": e.message}, signed_for)
+
+        def _drain(self) -> None:
+            """Read the announced body before an error answer goes out.
+
+            Measured on hugin 2026-11-21: an answer sent while the body was
+            still unread made Windows abort the connection (WinError 10053), so
+            the client got no answer at all. A body that is itself the error
+            (a bad or too large Content-Length) is not read: there is nothing
+            sane to wait for.
+            """
+            try:
+                self._raw()
+            except (ApiError, OSError):
+                pass
 
         def do_GET(self):
             self._dispatch("GET")

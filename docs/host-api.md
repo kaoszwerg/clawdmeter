@@ -69,7 +69,7 @@ through every animation by hand.)
 | Base URL | `http://127.0.0.1:47280` |
 | Port override | `api_port = <n>` in `%LOCALAPPDATA%\Clawdmeter\config` (plain `key = value` lines, `#` comments). Only needed if 47280 is taken on the machine. **Clients should not parse that file**: offer a port field (default 47280) beside the key instead |
 | Switch off | `api = off` in the same file (default: on) |
-| Bearer key | `%LOCALAPPDATA%\Clawdmeter\api-key` (one line, created on first start) |
+| Key (signs every call, never sent) | `%LOCALAPPDATA%\Clawdmeter\api-key` (one line, created on first start) |
 | Key for the user | tray icon → **Copy API key** |
 
 Config changes take effect on the next daemon start.
@@ -88,10 +88,8 @@ means that no daemon is running or that the API is switched off. Report it as
 
 ## 3. Authentication and errors
 
-Every endpoint except `GET /api/info`, `POST /api/prove` and
-`POST /api/challenge` needs one of two `Authorization` headers.
-
-**Signed (preferred; the key never travels).** Fetch a nonce with
+Every endpoint except `GET /api/info` and `POST /api/challenge` needs a
+**signed** request; the key itself never travels. Fetch a nonce with
 `POST /api/challenge` and send
 
 ```
@@ -123,24 +121,14 @@ request MAC `19525b77db9907afd094e4486757a1714bbc891384fbf7392e8d5bd65544071f`;
 status 200 with body `{"ok":true}` → response MAC
 `dc9096890455c018e415a8555472f2cb7f708f9543df1ddf2eccec7c07c1acf1`.
 
-**Bearer (older clients).**
-
-```
-Authorization: Bearer <key>
-```
-
-is still accepted, so older clients keep working; it will be switched off once
-every client signs.
-
-**Before sending the key, make the listener prove it holds it.** The port is
-not an identity: while this daemon is down, any program — another Windows
-account's included — can listen on 127.0.0.1:47280 and collect a bearer key
-sent to it. `POST /api/prove` (below) answers a fresh random nonce with a
-proof only a holder of the key can make, and the key itself does not travel.
-A client compares the proof with its own and sends the key only on a match.
-A daemon older than this endpoint answers 404; a client then has to judge the
-listener some other way (yggshell falls back to checking which account owns
-the listening socket).
+**Why signed, and why nothing else.** The port is not an identity: while this
+daemon is down, any program — another Windows account's included — can listen
+on 127.0.0.1:47280. With signing it learns nothing it can use: a MAC over a
+nonce this daemon will never accept again, and no key. `Authorization: Bearer`
+was accepted until 2026-11-21, while older clients still sent the key itself,
+and so was `POST /api/prove`, which let a client check the listener before
+doing so. Both are gone since every client signs (yggshell 0.260.17): a bearer
+header is a 401 however right the key, and `/api/prove` is a 404.
 
 Errors are JSON with one field, and **the status code carries the meaning**.
 The `error` text is for logs: its wording is not part of the contract and may
@@ -148,13 +136,17 @@ change. A client should show its own sentence, keyed on the code (and on what
 it sent), and may put the daemon's text in a detail line or the log.
 
 ```json
-{"error": "missing or wrong bearer key"}
+{"error": "bad signature"}
 ```
+
+An error answer goes out only after the announced body has been read (at most
+4 KiB). Measured on Windows: an answer sent over an unread body could make the
+system abort the connection, and the client got nothing.
 
 | Code | When |
 |---|---|
 | 400 | body is not a JSON object, neither or both of `status`/`anim`, unknown `status` or `anim`; a `Content-Length` that is not a plain decimal number |
-| 401 | missing or wrong key; a malformed, unknown, used or expired signature nonce; a wrong MAC |
+| 401 | no signature (a bearer key included); a malformed, unknown, used or expired signature nonce; a wrong MAC |
 | 404 | unknown path |
 | 405 | known path, wrong method (e.g. `GET /api/keepalive`) |
 | 413 | body over 4 KiB |
@@ -207,36 +199,9 @@ it replaces any hard-coded list in the client.
   mapping belongs to the daemon (see §5).
 - `animations` is every name the firmware knows, taken from the firmware table
   and checked against it by a test.
-- `prove` is `true` on a daemon that answers `POST /api/prove`. Absent on an
-  older one (a new field, so `api` stays 1).
-- `sign` is `true` on a daemon that answers `POST /api/challenge` and accepts
-  signed requests (§3). Absent on an older one. A client that has seen a
-  daemon sign should never send that port the bearer key again.
-
-### `POST /api/prove` — no key
-
-Proves the daemon holds the key without the key being sent.
-
-```json
-{"nonce": "<32 to 128 hex characters, fresh random per request>"}
-```
-
-answers
-
-```json
-{"proof": "<lowercase hex of HMAC-SHA256(key, label + nonce)>"}
-```
-
-where `key` is the key's UTF-8 bytes, `label` is the 29 bytes
-`clawdmeter host-api prove v1\n` (with the newline), and `nonce` is the nonce's
-ASCII text exactly as sent. A nonce that is not 32–128 hex characters is a
-400. Test vector, pinned on both sides (`test_prove_matches_the_shared_vector`
-here, `the_proof_is_the_one_the_daemon_makes` in yggshell): key
-`k3y-shared-vector`, nonce `00112233445566778899aabbccddeeff` →
-`ff4aef6e89d9b8f34e89cedb7c978ee103e9277067e3a2317c7e8f60b3b1f02a`.
-
-Compare the proof in constant time, and use a new nonce every time: a proof
-seen once is worth nothing for the next nonce.
+- `sign` is `true`: the daemon answers `POST /api/challenge` and serves signed
+  requests only (§3). `prove` is no longer listed; `api` stays 1, because a
+  client that signs is unaffected by the removal.
 
 ### `POST /api/challenge` — no key
 
@@ -432,15 +397,38 @@ second transport. Nothing in the ladder (`signal::roll::decide`) changes.
    user from driving both at once, since they are independent devices behind
    independent transports.
 
-**Minimal client, as a transcript** (bash; replace with reqwest):
+**Minimal client** (Python, standard library only; it never prints the key):
 
-```bash
-KEY=$(cat "$LOCALAPPDATA/Clawdmeter/api-key")
-H="Authorization: Bearer $KEY"
-curl -s http://127.0.0.1:47280/api/info                               # detect
-curl -s -X POST -H "$H" -d '{"status":"away"}' http://127.0.0.1:47280/api/status
-curl -s -X POST -H "$H" http://127.0.0.1:47280/api/keepalive           # every 30 s
-curl -s -X POST -H "$H" http://127.0.0.1:47280/api/release             # on quit
+```python
+import hashlib, hmac, json, os, urllib.request
+
+BASE = "http://127.0.0.1:47280"
+KEY = open(os.path.join(os.environ["LOCALAPPDATA"], "Clawdmeter", "api-key")).read().strip().encode()
+
+def mac(text: bytes) -> str:
+    return hmac.new(KEY, text, hashlib.sha256).hexdigest()
+
+def call(method: str, path: str, body: dict | None = None) -> dict:
+    nonce = json.load(urllib.request.urlopen(
+        urllib.request.Request(BASE + "/api/challenge", method="POST")))["nonce"]
+    data = b"" if body is None else json.dumps(body).encode()
+    sig = mac(b"clawdmeter host-api request v1\n"
+              + f"{method}\n{path}\n{nonce}\n".encode()
+              + hashlib.sha256(data).hexdigest().encode())
+    req = urllib.request.Request(BASE + path, method=method, data=data or None, headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Clawdmeter-HMAC-SHA256 nonce={nonce}, mac={sig}"})
+    with urllib.request.urlopen(req) as r:
+        answer = r.read()
+        want = mac(b"clawdmeter host-api response v1\n" + f"{nonce}\n{r.status}\n".encode()
+                   + hashlib.sha256(answer).hexdigest().encode())
+        if not hmac.compare_digest(r.headers.get("X-Clawdmeter-MAC", ""), want):
+            raise RuntimeError("answer not signed by the daemon")
+        return json.loads(answer)
+
+call("POST", "/api/status", {"status": "away"})   # claim
+call("POST", "/api/keepalive")                    # every 30 s
+call("POST", "/api/release")                      # on quit
 ```
 
 **Showing it in the tool panel:** everything VITI's panel shows has a
