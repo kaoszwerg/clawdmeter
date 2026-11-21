@@ -281,6 +281,7 @@ def info() -> dict:
         "wake_signals": list(WAKE_SIGNALS),
         "animations": list(ANIMATIONS),
         "prove": True,
+        "sign": True,
     }
 
 
@@ -318,6 +319,78 @@ def prove_answer(key: str, body: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Signed calls: the key never travels
+# ---------------------------------------------------------------------------
+
+# The texts each signature is made over, before the request's own parts.
+# yggshell's signal::clawdmeter holds the same bytes; one request vector and
+# one response vector are pinned on both sides.
+REQUEST_LABEL = b"clawdmeter host-api request v1\n"
+RESPONSE_LABEL = b"clawdmeter host-api response v1\n"
+
+# How long an issued nonce may be used, and how many may be outstanding. A
+# client takes one per call, so a handful is in flight at most; the limit only
+# bounds what a flood of challenges can make this daemon remember.
+NONCE_SECONDS = 30
+NONCE_LIMIT = 64
+
+_SIGNED = re.compile(
+    r"Clawdmeter-HMAC-SHA256 nonce=([0-9a-f]{64}), mac=([0-9a-f]{64})"
+)
+
+
+def request_mac(key: str, method: str, path: str, nonce: str, body: bytes) -> str:
+    """The signature a client puts on one request, lowercase hex.
+
+    HMAC-SHA256 over the label, the method, the path, the daemon's nonce and the
+    SHA-256 of the body, each on its own line. The key is the bearer key, which
+    then never crosses the wire: something else on the port learns a signature
+    over a nonce this daemon will never accept again.
+    """
+    text = (REQUEST_LABEL + f"{method}\n{path}\n{nonce}\n".encode()
+            + hashlib.sha256(body).hexdigest().encode())
+    return hmac.new(key.encode(), text, hashlib.sha256).hexdigest()
+
+
+def response_mac(key: str, nonce: str, status: int, body: bytes) -> str:
+    """The signature this daemon puts on its answer to a signed request.
+
+    Made over the same nonce, the HTTP status and the SHA-256 of the body, so a
+    client believes a device state only from a holder of the key.
+    """
+    text = (RESPONSE_LABEL + f"{nonce}\n{status}\n".encode()
+            + hashlib.sha256(body).hexdigest().encode())
+    return hmac.new(key.encode(), text, hashlib.sha256).hexdigest()
+
+
+class Nonces:
+    """Nonces this daemon has handed out: each good once, for NONCE_SECONDS."""
+
+    def __init__(self, clock=time.time) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._issued: dict[str, float] = {}   # nonce -> expiry; insertion order = age
+
+    def issue(self) -> str:
+        nonce = secrets.token_hex(32)
+        with self._lock:
+            self._issued[nonce] = self._clock() + NONCE_SECONDS
+            while len(self._issued) > NONCE_LIMIT:
+                del self._issued[next(iter(self._issued))]
+        return nonce
+
+    def take(self, nonce: str) -> bool:
+        """True once for an issued, unexpired nonce; it is gone afterwards."""
+        with self._lock:
+            expiry = self._issued.pop(nonce, None)
+        return expiry is not None and self._clock() < expiry
+
+
+def challenge(nonces: Nonces) -> dict:
+    return {"nonce": nonces.issue(), "ttl_s": NONCE_SECONDS}
+
+
+# ---------------------------------------------------------------------------
 # Key
 # ---------------------------------------------------------------------------
 
@@ -343,7 +416,7 @@ def load_or_create_key(path: Path) -> str:
 # HTTP
 # ---------------------------------------------------------------------------
 
-def _handler_for(state: HostState, key: str, log):
+def _handler_for(state: HostState, key: str, log, nonces: Nonces):
     class Handler(BaseHTTPRequestHandler):
         server_version = "Clawdmeter"
         sys_version = ""
@@ -351,26 +424,59 @@ def _handler_for(state: HostState, key: str, log):
         def log_message(self, fmt, *args):   # stay out of stderr (pythonw)
             pass
 
-        def _send(self, code: int, body: dict) -> None:
+        def _send(self, code: int, body: dict, signed_for: str | None = None) -> None:
             data = json.dumps(body).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
+            if signed_for is not None:
+                self.send_header("X-Clawdmeter-MAC", response_mac(key, signed_for, code, data))
             self.end_headers()
             self.wfile.write(data)
 
-        def _authorized(self) -> bool:
+        def _raw(self) -> bytes:
+            """The request body as sent, read once: a signature covers these bytes."""
+            if not hasattr(self, "_raw_body"):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > 4096:
+                    raise ApiError(413, "body too large")
+                self._raw_body = self.rfile.read(length) if length else b""
+            return self._raw_body
+
+        def _authorize(self, method: str, path: str) -> str | None:
+            """Who may call: the nonce of a valid signature, or None for the bearer key.
+
+            A signed request whose nonce was issued, is fresh and is used here
+            for the first time, with a MAC over exactly this method, path and
+            body, is served and its answer signed over the same nonce. The nonce
+            is spent before the MAC is checked, so a wrong guess burns it.
+            Anything else signed is refused unsigned: an answer signed over a
+            nonce this daemon did not accept would be a signing oracle.
+            """
             got = self.headers.get("Authorization", "")
-            return hmac.compare_digest(got.encode(), f"Bearer {key}".encode())
+            if got.startswith("Clawdmeter-HMAC-SHA256"):
+                m = _SIGNED.fullmatch(got)
+                if not m:
+                    raise ApiError(401, "malformed signature")
+                nonce, mac = m.groups()
+                if not nonces.take(nonce):
+                    raise ApiError(401, "unknown or used nonce")
+                want = request_mac(key, method, path, nonce, self._raw())
+                if not hmac.compare_digest(mac.encode(), want.encode()):
+                    raise ApiError(401, "bad signature")
+                return nonce
+            # Older clients still send the key itself; accepted until every
+            # client signs (yggshell ADR-PROJ-011, amendment of 2026-11-21).
+            if hmac.compare_digest(got.encode(), f"Bearer {key}".encode()):
+                return None
+            raise ApiError(401, "missing or wrong bearer key")
 
         def _body(self) -> dict:
-            length = int(self.headers.get("Content-Length") or 0)
-            if length == 0:
+            raw = self._raw()
+            if not raw:
                 return {}
-            if length > 4096:
-                raise ApiError(413, "body too large")
             try:
-                body = json.loads(self.rfile.read(length))
+                body = json.loads(raw)
             except (ValueError, UnicodeDecodeError):
                 raise ApiError(400, "body is not JSON")
             if not isinstance(body, dict):
@@ -379,6 +485,7 @@ def _handler_for(state: HostState, key: str, log):
 
         def _dispatch(self, method: str) -> None:
             path = self.path.split("?", 1)[0].rstrip("/")
+            signed_for = None
             try:
                 if method == "GET" and path == "/api/info":
                     return self._send(200, info())
@@ -386,6 +493,9 @@ def _handler_for(state: HostState, key: str, log):
                 # before a client sends it (see prove()).
                 if method == "POST" and path == "/api/prove":
                     return self._send(200, prove_answer(key, self._body()))
+                # No key: a nonce is worth nothing without the key to sign with.
+                if method == "POST" and path == "/api/challenge":
+                    return self._send(200, challenge(nonces))
                 routes = {
                     ("GET", "/api/status"): lambda: state.status(),
                     ("POST", "/api/status"): lambda: state.claim(self._body()),
@@ -393,18 +503,17 @@ def _handler_for(state: HostState, key: str, log):
                     ("POST", "/api/release"): lambda: state.release(),
                 }
                 if (method, path) not in routes:
-                    known = {p for _, p in routes} | {"/api/info", "/api/prove"}
+                    known = {p for _, p in routes} | {"/api/info", "/api/prove", "/api/challenge"}
                     if path in known:
                         raise ApiError(405, f"{method} not allowed on {path}")
                     raise ApiError(404, f"no such endpoint {path}")
-                if not self._authorized():
-                    raise ApiError(401, "missing or wrong bearer key")
+                signed_for = self._authorize(method, path)
                 result = routes[(method, path)]()
                 if method == "POST" and path == "/api/status":
                     log(f"Host API: claim -> {result['anim'] or '(device)'}")
-                self._send(200, result)
+                self._send(200, result, signed_for)
             except ApiError as e:
-                self._send(e.status, {"error": e.message})
+                self._send(e.status, {"error": e.message}, signed_for)
 
         def do_GET(self):
             self._dispatch("GET")
@@ -419,7 +528,8 @@ class HostApiServer:
     """The HTTP listener, on a thread of its own. Loopback only."""
 
     def __init__(self, state: HostState, key: str, port: int, log) -> None:
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", port), _handler_for(state, key, log))
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", port),
+                                          _handler_for(state, key, log, Nonces()))
         self._httpd.daemon_threads = True
         self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever,

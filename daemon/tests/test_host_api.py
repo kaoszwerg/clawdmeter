@@ -283,6 +283,141 @@ def test_prove_is_post_only(server):
 
 
 # ---------------------------------------------------------------------------
+# Signed calls: the key never travels
+# ---------------------------------------------------------------------------
+
+SHARED_NONCE = "00112233445566778899aabbccddeeff" * 2
+
+
+def test_request_mac_matches_the_shared_vector():
+    # Pinned in yggshell too
+    # (src-tauri/src/signal/clawdmeter.rs::the_request_signature_is_the_one_the_daemon_checks).
+    assert host_api.request_mac(
+        "k3y-shared-vector", "POST", "/api/status", SHARED_NONCE, b'{"status":"busy"}',
+    ) == "19525b77db9907afd094e4486757a1714bbc891384fbf7392e8d5bd65544071f"
+
+
+def test_response_mac_matches_the_shared_vector():
+    # Pinned in yggshell too
+    # (src-tauri/src/signal/clawdmeter.rs::the_answer_signature_is_the_one_the_daemon_makes).
+    assert host_api.response_mac(
+        "k3y-shared-vector", SHARED_NONCE, 200, b'{"ok":true}',
+    ) == "dc9096890455c018e415a8555472f2cb7f708f9543df1ddf2eccec7c07c1acf1"
+
+
+def test_a_nonce_is_good_once_and_only_while_fresh():
+    clock = Clock()
+    nonces = host_api.Nonces(clock=clock)
+    a, b = nonces.issue(), nonces.issue()
+    assert re.fullmatch(r"[0-9a-f]{64}", a) and a != b
+    assert nonces.take(a) is True
+    assert nonces.take(a) is False            # single use
+    clock.t += host_api.NONCE_SECONDS
+    assert nonces.take(b) is False            # expired
+    assert nonces.take("ab" * 32) is False    # never issued
+
+
+def test_only_the_newest_nonces_are_kept():
+    nonces = host_api.Nonces(clock=Clock())
+    first = nonces.issue()
+    rest = [nonces.issue() for _ in range(host_api.NONCE_LIMIT)]
+    assert nonces.take(first) is False
+    assert all(nonces.take(n) for n in rest)
+
+
+def _raw(srv, method, path, body=None, headers=None):
+    data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{srv.port}{path}", method=method, data=data,
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
+def _signed(srv, method, path, body=None, key="k" * 40, nonce=None, tamper=None):
+    if nonce is None:
+        code, _, raw = _raw(srv, "POST", "/api/challenge")
+        assert code == 200
+        nonce = json.loads(raw)["nonce"]
+    data = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
+    signed_method, signed_path, signed_data = method, path, data
+    if tamper == "method":
+        signed_method = "GET" if method == "POST" else "POST"
+    if tamper == "path":
+        signed_path = "/api/release"
+    if tamper == "body":
+        signed_data = data + b" "
+    mac = host_api.request_mac(key, signed_method, signed_path, nonce, signed_data)
+    code, headers, raw = _raw(srv, method, path, body, {
+        "Authorization": f"Clawdmeter-HMAC-SHA256 nonce={nonce}, mac={mac}",
+    })
+    return code, headers, raw, nonce
+
+
+def test_a_challenge_needs_no_key_and_info_says_signing_is_offered(server):
+    srv, _ = server
+    code, _, raw = _raw(srv, "POST", "/api/challenge")
+    body = json.loads(raw)
+    assert code == 200 and re.fullmatch(r"[0-9a-f]{64}", body["nonce"])
+    assert body["ttl_s"] == host_api.NONCE_SECONDS
+    assert _call(srv, "GET", "/api/info", key=None)[1]["sign"] is True
+    assert _call(srv, "GET", "/api/challenge", key=None)[0] == 405
+
+
+def test_a_signed_call_is_served_and_its_answer_is_signed(server):
+    srv, state = server
+    code, headers, raw, nonce = _signed(srv, "POST", "/api/status", {"status": "busy"})
+    assert code == 200 and json.loads(raw)["anim"] == "allow"
+    assert state.wanted_anim() == "allow"
+    assert headers["X-Clawdmeter-MAC"] == host_api.response_mac("k" * 40, nonce, 200, raw)
+    code, headers, raw, nonce = _signed(srv, "GET", "/api/status")
+    assert code == 200
+    assert headers["X-Clawdmeter-MAC"] == host_api.response_mac("k" * 40, nonce, 200, raw)
+
+
+def test_a_signed_call_cannot_be_replayed(server):
+    srv, _ = server
+    _, _, _, nonce = _signed(srv, "POST", "/api/keepalive")
+    code, headers, _, _ = _signed(srv, "POST", "/api/keepalive", nonce=nonce)
+    assert code == 401 and "X-Clawdmeter-MAC" not in headers
+
+
+@pytest.mark.parametrize("tamper", ["method", "path", "body"])
+def test_a_signature_over_another_request_is_refused(server, tamper):
+    srv, state = server
+    code, headers, _, _ = _signed(srv, "POST", "/api/status", {"status": "busy"}, tamper=tamper)
+    assert code == 401 and "X-Clawdmeter-MAC" not in headers
+    assert state.wanted_anim() == ""
+
+
+def test_a_signature_with_another_key_is_refused_and_burns_the_nonce(server):
+    srv, _ = server
+    code, _, _, nonce = _signed(srv, "POST", "/api/keepalive", key="w" * 40)
+    assert code == 401
+    assert _signed(srv, "POST", "/api/keepalive", nonce=nonce)[0] == 401
+
+
+@pytest.mark.parametrize("header", [
+    "Clawdmeter-HMAC-SHA256 nonce=ab, mac=cd",
+    "Clawdmeter-HMAC-SHA256 mac=" + "ab" * 32,
+    "Clawdmeter-HMAC-SHA256",
+    "Bearer",
+])
+def test_a_malformed_signature_is_refused(server, header):
+    srv, _ = server
+    assert _raw(srv, "POST", "/api/keepalive", headers={"Authorization": header})[0] == 401
+
+
+def test_the_bearer_key_is_still_accepted_for_older_clients(server):
+    srv, _ = server
+    assert _call(srv, "POST", "/api/keepalive")[0] == 200
+
+
+# ---------------------------------------------------------------------------
 # Waking the panel
 # ---------------------------------------------------------------------------
 

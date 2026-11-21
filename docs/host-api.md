@@ -88,11 +88,49 @@ means that no daemon is running or that the API is switched off. Report it as
 
 ## 3. Authentication and errors
 
-Every endpoint except `GET /api/info` and `POST /api/prove` needs
+Every endpoint except `GET /api/info`, `POST /api/prove` and
+`POST /api/challenge` needs one of two `Authorization` headers.
+
+**Signed (preferred; the key never travels).** Fetch a nonce with
+`POST /api/challenge` and send
+
+```
+Authorization: Clawdmeter-HMAC-SHA256 nonce=<the nonce>, mac=<request MAC>
+```
+
+where the request MAC is the lowercase hex of HMAC-SHA256 over
+
+```
+"clawdmeter host-api request v1\n" METHOD "\n" PATH "\n" NONCE "\n" hex(SHA-256(body))
+```
+
+with the key's UTF-8 bytes as the HMAC key. `PATH` is the path without query
+string or trailing slash (`/api/status`), `body` the exact bytes sent (empty
+for a request without a body). Each nonce is good **once**, for 30 s, and is
+spent before the MAC is checked, so a refused attempt burns it too. A served
+signed request's answer carries
+
+```
+X-Clawdmeter-MAC: <hex HMAC-SHA256 of "clawdmeter host-api response v1\n" NONCE "\n" STATUS "\n" hex(SHA-256(answer body))>
+```
+
+and a client should believe no device state without it. A refused signed
+request (401) is **not** signed: an answer signed over a nonce the daemon did
+not accept would let anyone collect signatures. Test vectors, pinned on both
+sides: key `k3y-shared-vector`, nonce `00112233445566778899aabbccddeeff`
+twice (64 hex characters), `POST /api/status` with body `{"status":"busy"}` →
+request MAC `19525b77db9907afd094e4486757a1714bbc891384fbf7392e8d5bd65544071f`;
+status 200 with body `{"ok":true}` → response MAC
+`dc9096890455c018e415a8555472f2cb7f708f9543df1ddf2eccec7c07c1acf1`.
+
+**Bearer (older clients).**
 
 ```
 Authorization: Bearer <key>
 ```
+
+is still accepted, so older clients keep working; it will be switched off once
+every client signs.
 
 **Before sending the key, make the listener prove it holds it.** The port is
 not an identity: while this daemon is down, any program — another Windows
@@ -116,7 +154,7 @@ it sent), and may put the daemon's text in a detail line or the log.
 | Code | When |
 |---|---|
 | 400 | body is not a JSON object, neither or both of `status`/`anim`, unknown `status` or `anim` |
-| 401 | missing or wrong key |
+| 401 | missing or wrong key; a malformed, unknown, used or expired signature nonce; a wrong MAC |
 | 404 | unknown path |
 | 405 | known path, wrong method (e.g. `GET /api/keepalive`) |
 | 413 | body over 4 KiB |
@@ -171,6 +209,9 @@ it replaces any hard-coded list in the client.
   and checked against it by a test.
 - `prove` is `true` on a daemon that answers `POST /api/prove`. Absent on an
   older one (a new field, so `api` stays 1).
+- `sign` is `true` on a daemon that answers `POST /api/challenge` and accepts
+  signed requests (§3). Absent on an older one. A client that has seen a
+  daemon sign should never send that port the bearer key again.
 
 ### `POST /api/prove` — no key
 
@@ -196,6 +237,18 @@ here, `the_proof_is_the_one_the_daemon_makes` in yggshell): key
 
 Compare the proof in constant time, and use a new nonce every time: a proof
 seen once is worth nothing for the next nonce.
+
+### `POST /api/challenge` — no key
+
+A nonce for one signed request (§3).
+
+```json
+{"nonce": "<64 lowercase hex characters>", "ttl_s": 30}
+```
+
+Good once, for `ttl_s` seconds. The daemon keeps the newest 64 outstanding;
+older ones are dropped. Take a new one for every call, and never retry a
+refused call with the same nonce.
 
 ### `GET /api/status`
 
