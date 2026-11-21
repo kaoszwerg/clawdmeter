@@ -24,8 +24,10 @@ Reference for client authors: docs/host-api.md.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
+import re
 import secrets
 import threading
 import time
@@ -278,7 +280,41 @@ def info() -> dict:
         "signals": {k: v for k, v in SIGNALS.items()},
         "wake_signals": list(WAKE_SIGNALS),
         "animations": list(ANIMATIONS),
+        "prove": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Proving the key without sending it
+# ---------------------------------------------------------------------------
+
+# The text the proof is made over, before the nonce. yggshell's
+# signal::clawdmeter::PROVE_LABEL must be the same bytes; both sides pin one
+# shared vector (test_prove_matches_the_shared_vector).
+PROVE_LABEL = b"clawdmeter host-api prove v1\n"
+
+# 32 to 128 hex characters: at least 16 random bytes, and nothing that is not
+# a nonce can be smuggled through it.
+_NONCE = re.compile(r"[0-9a-fA-F]{32,128}")
+
+
+def prove(key: str, nonce: str) -> str:
+    """What a holder of `key` answers to `nonce`: HMAC-SHA256, lowercase hex.
+
+    A client sends a fresh random nonce before it sends the bearer key, and
+    sends the key only if the answer is right. Something else listening on the
+    port — another account's program while this daemon is down, which is the
+    case yggshell's security audit (N4) is about — cannot make it without the
+    key, so it never receives the key. The key itself never travels for this.
+    """
+    return hmac.new(key.encode(), PROVE_LABEL + nonce.encode(), hashlib.sha256).hexdigest()
+
+
+def prove_answer(key: str, body: dict) -> dict:
+    nonce = body.get("nonce")
+    if not isinstance(nonce, str) or not _NONCE.fullmatch(nonce):
+        raise ApiError(400, '"nonce" must be 32 to 128 hex characters')
+    return {"proof": prove(key, nonce)}
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +382,10 @@ def _handler_for(state: HostState, key: str, log):
             try:
                 if method == "GET" and path == "/api/info":
                     return self._send(200, info())
+                # No key: the whole point is to prove the daemon holds it
+                # before a client sends it (see prove()).
+                if method == "POST" and path == "/api/prove":
+                    return self._send(200, prove_answer(key, self._body()))
                 routes = {
                     ("GET", "/api/status"): lambda: state.status(),
                     ("POST", "/api/status"): lambda: state.claim(self._body()),
@@ -353,7 +393,7 @@ def _handler_for(state: HostState, key: str, log):
                     ("POST", "/api/release"): lambda: state.release(),
                 }
                 if (method, path) not in routes:
-                    known = {p for _, p in routes} | {"/api/info"}
+                    known = {p for _, p in routes} | {"/api/info", "/api/prove"}
                     if path in known:
                         raise ApiError(405, f"{method} not allowed on {path}")
                     raise ApiError(404, f"no such endpoint {path}")

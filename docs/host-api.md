@@ -88,11 +88,21 @@ means that no daemon is running or that the API is switched off. Report it as
 
 ## 3. Authentication and errors
 
-Every endpoint except `GET /api/info` needs
+Every endpoint except `GET /api/info` and `POST /api/prove` needs
 
 ```
 Authorization: Bearer <key>
 ```
+
+**Before sending the key, make the listener prove it holds it.** The port is
+not an identity: while this daemon is down, any program — another Windows
+account's included — can listen on 127.0.0.1:47280 and collect a bearer key
+sent to it. `POST /api/prove` (below) answers a fresh random nonce with a
+proof only a holder of the key can make, and the key itself does not travel.
+A client compares the proof with its own and sends the key only on a match.
+A daemon older than this endpoint answers 404; a client then has to judge the
+listener some other way (yggshell falls back to checking which account owns
+the listening socket).
 
 Errors are JSON with one field, and **the status code carries the meaning**.
 The `error` text is for logs: its wording is not part of the contract and may
@@ -159,6 +169,33 @@ it replaces any hard-coded list in the client.
   mapping belongs to the daemon (see §5).
 - `animations` is every name the firmware knows, taken from the firmware table
   and checked against it by a test.
+- `prove` is `true` on a daemon that answers `POST /api/prove`. Absent on an
+  older one (a new field, so `api` stays 1).
+
+### `POST /api/prove` — no key
+
+Proves the daemon holds the key without the key being sent.
+
+```json
+{"nonce": "<32 to 128 hex characters, fresh random per request>"}
+```
+
+answers
+
+```json
+{"proof": "<lowercase hex of HMAC-SHA256(key, label + nonce)>"}
+```
+
+where `key` is the key's UTF-8 bytes, `label` is the 29 bytes
+`clawdmeter host-api prove v1\n` (with the newline), and `nonce` is the nonce's
+ASCII text exactly as sent. A nonce that is not 32–128 hex characters is a
+400. Test vector, pinned on both sides (`test_prove_matches_the_shared_vector`
+here, `the_proof_is_the_one_the_daemon_makes` in yggshell): key
+`k3y-shared-vector`, nonce `00112233445566778899aabbccddeeff` →
+`ff4aef6e89d9b8f34e89cedb7c978ee103e9277067e3a2317c7e8f60b3b1f02a`.
+
+Compare the proof in constant time, and use a new nonce every time: a proof
+seen once is worth nothing for the next nonce.
 
 ### `GET /api/status`
 

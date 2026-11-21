@@ -243,6 +243,46 @@ def test_errors_are_json(server):
 
 
 # ---------------------------------------------------------------------------
+# Proving the key without sending it
+# ---------------------------------------------------------------------------
+
+def test_prove_matches_the_shared_vector():
+    # The same vector is pinned in yggshell
+    # (src-tauri/src/signal/clawdmeter.rs::the_proof_is_the_one_the_daemon_makes).
+    # A change on one side only leaves the client unable to trust this daemon.
+    assert host_api.prove("k3y-shared-vector", "00112233445566778899aabbccddeeff") == (
+        "ff4aef6e89d9b8f34e89cedb7c978ee103e9277067e3a2317c7e8f60b3b1f02a"
+    )
+
+
+def test_prove_needs_no_key_and_answers_for_the_nonce(server):
+    srv, _ = server
+    nonce = "ab" * 32
+    code, body = _call(srv, "POST", "/api/prove", {"nonce": nonce}, key=None)
+    assert code == 200
+    assert body == {"proof": host_api.prove("k" * 40, nonce)}
+
+
+def test_info_says_the_proof_is_offered(server):
+    srv, _ = server
+    assert _call(srv, "GET", "/api/info", key=None)[1]["prove"] is True
+
+
+@pytest.mark.parametrize("body", [
+    {}, {"nonce": ""}, {"nonce": "ab" * 15}, {"nonce": "ab" * 65},
+    {"nonce": "zz" * 32}, {"nonce": 42},
+])
+def test_a_nonce_that_is_not_long_hex_is_refused(server, body):
+    srv, _ = server
+    assert _call(srv, "POST", "/api/prove", body, key=None)[0] == 400
+
+
+def test_prove_is_post_only(server):
+    srv, _ = server
+    assert _call(srv, "GET", "/api/prove", key=None)[0] == 405
+
+
+# ---------------------------------------------------------------------------
 # Waking the panel
 # ---------------------------------------------------------------------------
 
